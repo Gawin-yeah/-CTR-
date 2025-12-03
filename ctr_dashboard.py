@@ -10,8 +10,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openpyxl import load_workbook
 
 # --- 页面配置 ---
-st.set_page_config(page_title="CTR 全局清洗系统 (V47)", layout="wide")
-st.title("🎯 首页卡片 CTR 全局清洗系统 (V47.0)")
+st.set_page_config(page_title="CTR 交互重构系统 (V48)", layout="wide")
+st.title("🎯 首页卡片 CTR 交互重构系统 (V48.0)")
 
 # ==========================================
 # 🧠 0. 状态记忆
@@ -138,7 +138,7 @@ def init_ai_sidebar(context_data):
 GLOBAL_DATA_CONTEXT = "暂无数据。"
 
 # ==========================================
-# 📂 数据接入 (V47 全局控制)
+# 📂 数据接入
 # ==========================================
 st.sidebar.header("1. 数据接入")
 manual_country = st.sidebar.text_input("✍️ 所属国家", value="US").upper()
@@ -161,8 +161,7 @@ if file_b:
     except: pass
 
 st.sidebar.markdown("---")
-# V47 核心：全局单日阈值
-global_min_exp = st.sidebar.number_input("📉 单日最小曝光阈值 (去噪)", value=50, step=50, help="只有【单日曝光 >= 此数值】的数据才会被保留。调整此值会实时影响所有计算结果！")
+min_exp_noise = st.sidebar.number_input("📉 单日最小曝光阈值 (去噪)", value=50, step=50)
 
 def extract_start_date(s):
     s = str(s).strip()
@@ -171,7 +170,7 @@ def extract_start_date(s):
     return s
 
 @st.cache_data
-def process_data(file, sheet_name=0, visible_only=False):
+def process_data(file, sheet_name=0, visible_only=False, min_exp=50):
     try:
         if visible_only:
             wb = load_workbook(file, data_only=True, read_only=False)
@@ -218,26 +217,16 @@ def process_data(file, sheet_name=0, visible_only=False):
         for c in ['exposure_uv', 'click_uv']:
             if c not in final.columns: final[c] = 0
             
-        # V47 移除这里的硬编码过滤，数据保留原始状态
+        final = final[(final['exposure_uv']>=min_exp) & (final['click_uv']<=final['exposure_uv'])]
         return final
     except: return None
 
 # --- V47 全局清洗函数 ---
 def filter_dataframe(df, min_exp):
-    """
-    统一的清洗入口：
-    1. 剔除单日曝光 < min_exp 的行
-    2. 剔除点击 > 曝光的行
-    """
     if df is None: return None
-    # 核心过滤
-    filtered = df[
-        (df['exposure_uv'] >= min_exp) & 
-        (df['click_uv'] <= df['exposure_uv'])
-    ].copy()
-    return filtered
+    return df[(df['exposure_uv'] >= min_exp) & (df['click_uv'] <= df['exposure_uv'])].copy()
 
-# --- 4. 单文件视图 ---
+# --- 4. 单文件视图 (V48 重构：搜索 & 多维度) ---
 def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
     period = data.groupby(group_cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
     period['加权CTR'] = period['click_uv']/period['exposure_uv']
@@ -246,16 +235,14 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
     daily['daily_ctr'] = daily['click_uv']/daily['exposure_uv']
     
     arith = daily.groupby(group_cols)['daily_ctr'].mean().reset_index().rename(columns={'daily_ctr':'算术CTR'})
-    pivot = daily.pivot_table(index=group_cols, columns='date', values='daily_ctr', aggfunc='mean')
-    pivot.columns = [d.strftime('%m-%d') for d in pivot.columns]
     
-    merged = pd.merge(period, arith, on=group_cols, how='left')
-    merged = pd.merge(merged, pivot, on=group_cols, how='left').sort_values('exposure_uv', ascending=False)
+    merged = pd.merge(period, arith, on=group_cols, how='left').sort_values('exposure_uv', ascending=False)
     
     display = merged.copy()
     if 'slot_id' in group_cols: display['label'] = display['card_id'] + " (" + display['slot_id'] + ")"
     else: display['label'] = display['card_id']
     
+    # Dashboard
     with st.expander(f"📊 {view_name} - Leader 驾驶舱", expanded=True):
         c1, c2 = st.columns(2)
         with c1: st.plotly_chart(plot_pie(display.head(8), 'label', 'exposure_uv', "流量 Top 8"), use_container_width=True)
@@ -266,28 +253,76 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
             else:
                 st.info("数据不足以排名")
 
+    # === V48 交互升级：大屏搜索与维度切换 ===
+    st.markdown("---")
+    st.markdown(f"#### 📋 详细数据透视 ({view_name})")
+    
+    c_s1, c_s2 = st.columns([2, 1])
+    with c_s1:
+        # 1. 显眼的多选搜索框
+        search_vals = st.multiselect(f"🔍 搜索/筛选卡片 (支持多选)", display['label'].unique(), key=f"search_{unique_key_prefix}")
+    with c_s2:
+        # 2. 表格展示维度切换
+        table_metric = st.radio("📊 表格展示每日指标:", ["每日 CTR", "每日 曝光", "每日 点击"], horizontal=True, key=f"tm_{unique_key_prefix}")
+    
+    # 动态计算 Pivot 数据
+    if table_metric == "每日 CTR":
+        val_col = 'daily_ctr'
+        fmt_str = '{:.2%}'
+    elif table_metric == "每日 曝光":
+        val_col = 'exposure_uv'
+        fmt_str = '{:,.0f}'
+    else:
+        val_col = 'click_uv'
+        fmt_str = '{:,.0f}'
+        
+    pivot = daily.pivot_table(index=group_cols, columns='date', values=val_col, aggfunc='sum' if val_col != 'daily_ctr' else 'mean')
+    pivot.columns = [d.strftime('%m-%d') for d in pivot.columns]
+    
+    # 合并 Pivot
+    final_display = pd.merge(display, pivot, on=group_cols, how='left')
+    
+    # 应用搜索
+    if search_vals:
+        final_display = final_display[final_display['label'].isin(search_vals)]
+    
     cols = ['card_id', 'slot_id', '加权CTR', '算术CTR', 'exposure_uv', 'click_uv'] if 'slot_id' in group_cols else ['card_id', '加权CTR', '算术CTR', 'exposure_uv', 'click_uv']
     cols += [c for c in pivot.columns]
     
-    st.markdown("#### 📋 详细数据")
+    # 渲染表格
     fmt = {'加权CTR':'{:.2%}', '算术CTR':'{:.2%}', 'exposure_uv':'{:.0f}', 'click_uv':'{:.0f}'}
-    for c in pivot.columns: fmt[c] = '{:.2%}'
-    st.dataframe(display[cols].style.format(fmt).background_gradient(subset=['加权CTR'], cmap='RdYlGn', axis=0), use_container_width=True)
+    for c in pivot.columns: fmt[c] = fmt_str
+    
+    st.dataframe(
+        final_display[cols].style.format(fmt).background_gradient(subset=['加权CTR'], cmap='RdYlGn', axis=0), 
+        use_container_width=True, 
+        height=500
+    )
 
+    # === V48 趋势下钻：增加点击量 ===
     st.markdown("#### 📈 趋势下钻")
-    sel = st.multiselect(f"选择对象 ({view_name})", display['label'].unique(), key=f"ms_{unique_key_prefix}")
+    # 如果上面搜索了，下面默认选中搜索的内容
+    default_trend = search_vals if search_vals else []
+    sel = st.multiselect(f"选择对象画图", display['label'].unique(), default=default_trend, key=f"ms_{unique_key_prefix}")
+    
     if sel:
-        metric_choice = st.radio("指标:", ["CTR", "曝光"], horizontal=True, key=f"rd_{unique_key_prefix}")
+        metric_choice = st.radio("趋势指标:", ["✨ CTR", "📊 曝光量", "👆 点击量"], horizontal=True, key=f"rd_{unique_key_prefix}")
         plot_df = daily.copy()
         if 'slot_id' in group_cols: plot_df['label'] = plot_df['card_id'] + " (" + plot_df['slot_id'] + ")"
         else: plot_df['label'] = plot_df['card_id']
         plot_df = plot_df[plot_df['label'].isin(sel)]
-        y_col = 'daily_ctr' if metric_choice == "CTR" else 'exposure_uv'
-        fmt_str = ".2%" if metric_choice == "CTR" else ".0f"
-        st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True, title=f"每日 {metric_choice} 走势").update_yaxes(tickformat=fmt_str), use_container_width=True)
+        
+        if metric_choice == "CTR":
+            y_col, fmt_p = 'daily_ctr', ".2%"
+        elif metric_choice == "曝光量":
+            y_col, fmt_p = 'exposure_uv', ".0f"
+        else:
+            y_col, fmt_p = 'click_uv', ".0f"
+            
+        st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True, title=f"每日 {metric_choice} 走势").update_yaxes(tickformat=fmt_p), use_container_width=True)
 
 def show_single_analysis(df, label="表格 A", is_secondary=False):
-    # V47 确保使用的是已经根据全局阈值清洗过的数据 df
+    # (记忆逻辑保持 V47 不变)
     if label == "表格 A":
         key_ex, key_in = "k_ex_a", "k_in_a"
         def_ex, def_in = st.session_state.persist_ex_a, st.session_state.persist_in_a
@@ -364,9 +399,8 @@ def show_single_analysis(df, label="表格 A", is_secondary=False):
     with c_e1: st.download_button("📄 Word 报告", word_file, f"Report_{label}.docx", key=f"bw_{label}")
     with c_e2: st.download_button("📊 Excel 数据", excel_file, f"Data_{label}.xlsx", key=f"be_{label}")
 
-# --- 5. 双表对比 ---
+# --- 5. 双表对比 (保持V47逻辑) ---
 def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
-    # d1_raw 和 d2_raw 在传入前已经被全局阈值清洗过了
     st.markdown("### ⚙️ 对比配置")
     mode = st.radio("维度", ["💳 仅卡片", "📍 卡片+坑位"], horizontal=True, key=f"rd_{la}")
     cols = ['card_id'] if "仅" in mode else ['card_id', 'slot_id']
@@ -487,14 +521,13 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
 def show_comparison(df1, df2):
     show_comparison_logic(df1, df2)
 
-# --- 主逻辑 (V47 修改：清洗后传入) ---
+# --- 主逻辑 ---
 df_a_raw = None
 if file_a: df_a_raw = process_data(file_a, sheet_name_a, visible_only=read_visible_only)
-
 df_b_raw = None
 if file_b: df_b_raw = process_data(file_b, sheet_name_b, visible_only=read_visible_only)
 
-# V47 核心：全局应用阈值过滤
+# 全局阈值清洗
 df_a = filter_dataframe(df_a_raw, global_min_exp)
 df_b = filter_dataframe(df_b_raw, global_min_exp)
 
@@ -504,7 +537,6 @@ if df_a is not None:
         st.divider()
         if mode == "📄 单文件分析":
             t1, t2 = st.tabs(["表格 A", "表格 B"])
-            # 标记 is_secondary 以避免全局变量覆盖问题
             with t1: show_single_analysis(df_a, "表格 A")
             with t2: show_single_analysis(df_b, "表格 B", is_secondary=True)
         else:
