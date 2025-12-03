@@ -10,76 +10,50 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openpyxl import load_workbook
 
 # --- 页面配置 ---
-st.set_page_config(page_title="CTR 视觉修复系统 (V39)", layout="wide")
-st.title("🎯 首页卡片 CTR 视觉修复系统 (V39.0)")
+st.set_page_config(page_title="CTR 终极分析系统 (V41)", layout="wide")
+st.title("🎯 首页卡片 CTR 终极分析系统 (V41.0 全局剔除版)")
 
 # ==========================================
-# 🛠️ 绘图函数集 (V39 核心修复：强制分类轴)
+# 🛠️ 绘图与工具函数
 # ==========================================
 def plot_dual_axis(df, x_col, bar_col, line_col, title):
     fig = go.Figure()
     fig.add_trace(go.Bar(x=df[x_col], y=df[bar_col], name="总曝光", marker_color='#A9CCE3', opacity=0.6, yaxis='y1'))
     fig.add_trace(go.Scatter(x=df[x_col], y=df[line_col], name="CTR", mode='lines+markers', line=dict(color='#E74C3C', width=3), marker=dict(size=8), yaxis='y2'))
-    fig.update_layout(title=title, xaxis_title="日期", yaxis=dict(title="曝光", side="left", showgrid=False), yaxis2=dict(title="CTR", side="right", overlaying="y", tickformat=".2%", showgrid=True), hovermode="x unified", legend=dict(orientation="h", y=1.1), template="plotly_dark", height=400)
+    fig.update_layout(
+        title=title, xaxis_title="日期", 
+        yaxis=dict(title="曝光", side="left", showgrid=False), 
+        yaxis2=dict(title="CTR", side="right", overlaying="y", tickformat=".2%", showgrid=True), 
+        hovermode="x unified", legend=dict(orientation="h", y=1.1), template="plotly_white", height=400
+    )
     return fig
 
 def plot_bar_race(df, x_col, y_col, title):
-    # V39 修复：确保 y_col 是字符串，防止被当成数字
     df[y_col] = df[y_col].astype(str)
     fig = px.bar(df, x=x_col, y=y_col, orientation='h', title=title, text_auto='.2%', color=x_col, color_continuous_scale='Blues')
-    # V39 修复：强制 type='category'
-    fig.update_layout(yaxis={'categoryorder':'total ascending', 'type': 'category'}, template="plotly_dark", height=350, showlegend=False)
+    fig.update_layout(yaxis={'categoryorder':'total ascending', 'type': 'category'}, template="plotly_white", height=350, showlegend=False)
     return fig
 
 def plot_pie(df, names, values, title):
     fig = px.pie(df, names=names, values=values, title=title, hole=0.4)
-    fig.update_layout(template="plotly_dark", height=350)
+    fig.update_layout(template="plotly_white", height=350)
     return fig
 
 def plot_paired_bar(df, category_col, val_a, val_b, title):
-    """对比柱状图 (V39 修复坐标轴)"""
-    # 强制转字符串
     df[category_col] = df[category_col].astype(str)
-    
     df_melt = df.melt(id_vars=[category_col], value_vars=[val_a, val_b], var_name='时期', value_name='CTR')
     df_melt['时期'] = df_melt['时期'].map({val_a: '时期A', val_b: '时期B'})
-    
     fig = px.bar(df_melt, y=category_col, x='CTR', color='时期', barmode='group', orientation='h', text_auto='.2%', title=title)
-    
-    # V39 关键修复：type: category 强制不按数字排列
-    fig.update_layout(
-        yaxis={'categoryorder':'total ascending', 'type': 'category'}, 
-        xaxis_tickformat=".2%", 
-        height=500,
-        template="plotly_dark",
-        legend=dict(orientation="h", y=1.1)
-    )
+    fig.update_layout(yaxis={'categoryorder':'total ascending', 'type': 'category'}, xaxis_tickformat=".2%", height=500, legend=dict(orientation="h", y=1.1))
     return fig
 
 def plot_impact_diverging(df, category_col, impact_col, title):
-    """红绿涨跌图 (V39 修复坐标轴)"""
-    # 强制转字符串
     df[category_col] = df[category_col].astype(str)
-    
     df['Color'] = df[impact_col].apply(lambda x: '#E74C3C' if x >= 0 else '#2ECC71')
-    fig = go.Figure(go.Bar(
-        y=df[category_col], x=df[impact_col], orientation='h',
-        marker=dict(color=df['Color']), text=df[impact_col], texttemplate='%{text:+.2%}', textposition='outside'
-    ))
-    
-    # V39 关键修复
-    fig.update_layout(
-        title=title, 
-        yaxis={'categoryorder':'total ascending', 'type': 'category'}, 
-        xaxis_tickformat=".2%", 
-        height=500,
-        template="plotly_dark"
-    )
+    fig = go.Figure(go.Bar(y=df[category_col], x=df[impact_col], orientation='h', marker=dict(color=df['Color']), text=df[impact_col], texttemplate='%{text:+.2%}', textposition='outside'))
+    fig.update_layout(title=title, yaxis={'categoryorder':'total ascending', 'type': 'category'}, xaxis_tickformat=".2%", height=500)
     return fig
 
-# ==========================================
-# 🛠️ 导出工具
-# ==========================================
 def generate_excel(dfs_dict):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -233,7 +207,7 @@ def process_data(file, sheet_name=0, visible_only=False):
         return final[(final['exposure_uv']>=min_exp_noise) & (final['click_uv']<=final['exposure_uv'])]
     except: return None
 
-# --- 4. 单文件视图 ---
+# --- 4. 单文件视图 (Dashboard) ---
 def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
     period = data.groupby(group_cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
     period['加权CTR'] = period['click_uv']/period['exposure_uv']
@@ -252,12 +226,12 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
     if 'slot_id' in group_cols: display['label'] = display['card_id'] + " (" + display['slot_id'] + ")"
     else: display['label'] = display['card_id']
     
-    st.markdown(f"### 📊 {view_name} 运营看板")
-    c1, c2 = st.columns(2)
-    with c1: st.plotly_chart(plot_pie(display.head(8), 'label', 'exposure_uv', "流量 Top 8"), use_container_width=True)
-    with c2: 
-        top_ctr = display[display['exposure_uv'] > display['exposure_uv'].mean()*0.1].head(10)
-        st.plotly_chart(plot_bar_race(top_ctr, '加权CTR', 'label', "高潜 Top 10"), use_container_width=True)
+    with st.expander(f"📊 {view_name} - Leader 驾驶舱", expanded=True):
+        c1, c2 = st.columns(2)
+        with c1: st.plotly_chart(plot_pie(display.head(8), 'label', 'exposure_uv', "流量 Top 8"), use_container_width=True)
+        with c2: 
+            top_ctr = display[display['exposure_uv'] > display['exposure_uv'].mean()*0.1].head(10)
+            st.plotly_chart(plot_bar_race(top_ctr, '加权CTR', 'label', "高潜 Top 10"), use_container_width=True)
 
     cols = ['card_id', 'slot_id', '加权CTR', '算术CTR', 'exposure_uv', 'click_uv'] if 'slot_id' in group_cols else ['card_id', '加权CTR', '算术CTR', 'exposure_uv', 'click_uv']
     cols += [c for c in pivot.columns]
@@ -269,12 +243,26 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
 
     st.markdown("#### 📈 趋势下钻")
     sel = st.multiselect(f"选择对象 ({view_name})", display['label'].unique(), key=f"ms_{unique_key_prefix}")
+    
+    # === V41 新增：趋势指标切换 ===
     if sel:
+        metric_choice = st.radio("选择趋势指标:", ["✨ CTR (点击率)", "📊 曝光量 (UV)"], horizontal=True, key=f"rad_{unique_key_prefix}")
+        
         plot_df = daily.copy()
         if 'slot_id' in group_cols: plot_df['label'] = plot_df['card_id'] + " (" + plot_df['slot_id'] + ")"
         else: plot_df['label'] = plot_df['card_id']
         plot_df = plot_df[plot_df['label'].isin(sel)]
-        st.plotly_chart(px.line(plot_df, x='date', y='daily_ctr', color='label', markers=True).update_yaxes(tickformat=".2%"), use_container_width=True)
+        
+        if "CTR" in metric_choice:
+            y_col = 'daily_ctr'
+            fmt_str = ".2%"
+            title = "每日 CTR 走势"
+        else:
+            y_col = 'exposure_uv'
+            fmt_str = ".0f"
+            title = "每日 曝光量 走势"
+            
+        st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True, title=title).update_yaxes(tickformat=fmt_str), use_container_width=True)
 
 def show_single_analysis(df, label="表格 A"):
     st.markdown(f"## 🔎 {label} - 深度分析")
@@ -283,10 +271,22 @@ def show_single_analysis(df, label="表格 A"):
         show_comparison_logic(df, df, f"{label}-A", f"{label}-B")
         return
 
-    min_d, max_d = df['date'].min(), df['date'].max()
+    # === V41 新增：单文件手动剔除 ===
+    all_cards = sorted(df['card_id'].unique())
+    exclude_list = st.multiselect("🚫 剔除指定卡片 (实时重算)", all_cards, key=f"ex_single_{label}")
+    
+    if exclude_list:
+        sub_df_raw = df[~df['card_id'].isin(exclude_list)].copy()
+        st.caption(f"已剔除 {len(exclude_list)} 个卡片，下方数据已重新计算。")
+    else:
+        sub_df_raw = df.copy()
+
+    min_d, max_d = sub_df_raw['date'].min(), sub_df_raw['date'].max()
     dr = st.date_input("选择周期", [min_d, max_d], key=f"dr_{label}")
     if len(dr) != 2: return
-    sub = df[(df['date']>=dr[0]) & (df['date']<=dr[1])].copy()
+    
+    # 最终计算用的数据
+    sub = sub_df_raw[(sub_df_raw['date']>=dr[0]) & (sub_df_raw['date']<=dr[1])].copy()
     
     e_tot = sub['exposure_uv'].sum()
     c_tot = sub['click_uv'].sum()
@@ -303,7 +303,12 @@ def show_single_analysis(df, label="表格 A"):
     c3.metric("加权均值 CTR", f"{ctr_w:.2%}")
     
     global GLOBAL_DATA_CONTEXT
-    GLOBAL_DATA_CONTEXT = f"单表:{label}, CTR:{ctr_w:.2%}, 曝光:{e_tot}"
+    GLOBAL_DATA_CONTEXT = f"单表:{label}, 剔除:{exclude_list}, CTR:{ctr_w:.2%}, 曝光:{e_tot}"
+    
+    export_df = sub.groupby(['card_id', 'slot_id']).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
+    export_df['weighted_ctr'] = export_df['click_uv'] / export_df['exposure_uv']
+    export_df = export_df.sort_values('exposure_uv', ascending=False)
+    top_5 = export_df.head(5).rename(columns={'card_id':'卡片ID', 'weighted_ctr':'CTR', 'exposure_uv':'曝光'})
     
     st.divider()
     t1, t2 = st.tabs(["💳 视图:只看卡片", "📍 视图:细分坑位"])
@@ -311,11 +316,14 @@ def show_single_analysis(df, label="表格 A"):
     with t2: render_analysis_view(sub, ['card_id', 'slot_id'], "坑位维度", label+"2")
     
     st.divider()
+    st.header("📥 导出中心")
     c_e1, c_e2 = st.columns(2)
-    with c_e1: st.download_button("📄 Word 报告", generate_word_report(f"Report-{label}", {"CTR": f"{ctr_w:.2%}"}, "详见附件", {"Overview": daily_g}), f"Rep_{label}.docx", key=f"bw_{label}")
-    with c_e2: st.download_button("📊 Excel 数据", generate_excel({"Daily": daily_g, "Raw": sub}), f"Dat_{label}.xlsx", key=f"be_{label}")
+    word_file = generate_word_report(f"报告-{manual_country}", {"周期": str(dr), "曝光": f"{e_tot:,.0f}", "CTR": f"{ctr_w:.2%}"}, "数据详见附表", {"Top5": top_5})
+    excel_file = generate_excel({"聚合": export_df, "明细": sub})
+    with c_e1: st.download_button("📄 Word 报告", word_file, f"Report_{label}.docx", key=f"bw_{label}")
+    with c_e2: st.download_button("📊 Excel 数据", excel_file, f"Data_{label}.xlsx", key=f"be_{label}")
 
-# --- 5. 双表对比 (V39 修复图表) ---
+# --- 5. 双表对比 ---
 def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
     st.markdown("### ⚙️ 对比配置")
     mode = st.radio("维度", ["💳 仅卡片", "📍 卡片+坑位"], horizontal=True, key=f"rd_{la}")
@@ -369,7 +377,6 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         global GLOBAL_DATA_CONTEXT
         GLOBAL_DATA_CONTEXT = f"对比: CTR {ctra:.2%}->{ctrb:.2%}, 诊断:{diag}, 归因:{res_txt}"
 
-        # 详细
         s1 = d1f.groupby(cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
         s2 = d2f.groupby(cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
         s1 = s1.rename(columns={'exposure_uv':'Exp_A', 'click_uv':'Clk_A'})
@@ -387,25 +394,23 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
             return '下架'
         comp['Status'] = comp['_merge'].apply(status)
         
-        # Leader Charts (V39 核心修复)
         st.subheader("📈 Leader 驾驶舱")
         c_c1, c_c2 = st.columns(2)
-        valid = comp[comp['Status']=='延续'].copy()
-        
-        if 'slot_id' in cols: valid['L'] = valid['card_id'] + " (" + valid['slot_id'] + ")"
-        else: valid['L'] = valid['card_id']
+        valid = comp[comp['Status']=='延续']
         
         with c_c1:
             top10 = valid.sort_values('Exp_B', ascending=False).head(10)
-            if not top10.empty:
-                st.plotly_chart(plot_paired_bar(top10, 'L', 'CTR_A', 'CTR_B', "Top 10 流量卡片 CTR 对比"), use_container_width=True)
+            if 'slot_id' in cols: top10['L'] = top10['card_id'] + " (" + top10['slot_id'] + ")"
+            else: top10['L'] = top10['card_id']
+            st.plotly_chart(plot_paired_bar(top10, 'L', 'CTR_A', 'CTR_B', "Top 10 流量卡片 CTR 对比"), use_container_width=True)
             
         with c_c2:
             top5 = valid.sort_values('Diff', ascending=False).head(5)
             bot5 = valid.sort_values('Diff', ascending=True).head(5)
             imp = pd.concat([top5, bot5])
-            if not imp.empty:
-                st.plotly_chart(plot_impact_diverging(imp, 'L', 'Diff', "涨跌幅红黑榜"), use_container_width=True)
+            if 'slot_id' in cols: imp['L'] = imp['card_id'] + " (" + imp['slot_id'] + ")"
+            else: imp['L'] = imp['card_id']
+            st.plotly_chart(plot_impact_diverging(imp, 'L', 'Diff', "涨跌幅红黑榜"), use_container_width=True)
 
         st.dataframe(comp.style.format({'CTR_A':'{:.2%}', 'CTR_B':'{:.2%}', 'Diff':'{:.2%}'}).background_gradient(subset=['Diff'], cmap='RdYlGn', vmin=-0.02, vmax=0.02), use_container_width=True)
         
