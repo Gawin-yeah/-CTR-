@@ -10,16 +10,15 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openpyxl import load_workbook
 
 # --- 页面配置 ---
-st.set_page_config(page_title="CTR 智能防崩系统 (V44)", layout="wide")
-st.title("🎯 首页卡片 CTR 智能防崩系统 (V44.0)")
+st.set_page_config(page_title="CTR 全局清洗系统 (V47)", layout="wide")
+st.title("🎯 首页卡片 CTR 全局清洗系统 (V47.0)")
 
 # ==========================================
-# 🧠 0. 状态记忆初始化
+# 🧠 0. 状态记忆
 # ==========================================
 if 'persist_ex_a' not in st.session_state: st.session_state.persist_ex_a = []
 if 'persist_ex_b' not in st.session_state: st.session_state.persist_ex_b = []
 if 'persist_ex_dual' not in st.session_state: st.session_state.persist_ex_dual = []
-
 if 'persist_in_a' not in st.session_state: st.session_state.persist_in_a = []
 if 'persist_in_b' not in st.session_state: st.session_state.persist_in_b = []
 if 'persist_in_dual' not in st.session_state: st.session_state.persist_in_dual = []
@@ -27,7 +26,6 @@ if 'persist_in_dual' not in st.session_state: st.session_state.persist_in_dual =
 def update_ex_a(): st.session_state.persist_ex_a = st.session_state.k_ex_a
 def update_ex_b(): st.session_state.persist_ex_b = st.session_state.k_ex_b
 def update_ex_dual(): st.session_state.persist_ex_dual = st.session_state.k_ex_dual
-
 def update_in_a(): st.session_state.persist_in_a = st.session_state.k_in_a
 def update_in_b(): st.session_state.persist_in_b = st.session_state.k_in_b
 def update_in_dual(): st.session_state.persist_in_dual = st.session_state.k_in_dual
@@ -140,7 +138,7 @@ def init_ai_sidebar(context_data):
 GLOBAL_DATA_CONTEXT = "暂无数据。"
 
 # ==========================================
-# 📂 数据接入
+# 📂 数据接入 (V47 全局控制)
 # ==========================================
 st.sidebar.header("1. 数据接入")
 manual_country = st.sidebar.text_input("✍️ 所属国家", value="US").upper()
@@ -163,7 +161,8 @@ if file_b:
     except: pass
 
 st.sidebar.markdown("---")
-min_exp_noise = st.sidebar.number_input("最小曝光阈值", value=50, step=10)
+# V47 核心：全局单日阈值
+global_min_exp = st.sidebar.number_input("📉 单日最小曝光阈值 (去噪)", value=50, step=50, help="只有【单日曝光 >= 此数值】的数据才会被保留。调整此值会实时影响所有计算结果！")
 
 def extract_start_date(s):
     s = str(s).strip()
@@ -172,7 +171,7 @@ def extract_start_date(s):
     return s
 
 @st.cache_data
-def process_data(file, sheet_name=0, visible_only=False, min_exp=50):
+def process_data(file, sheet_name=0, visible_only=False):
     try:
         if visible_only:
             wb = load_workbook(file, data_only=True, read_only=False)
@@ -219,9 +218,24 @@ def process_data(file, sheet_name=0, visible_only=False, min_exp=50):
         for c in ['exposure_uv', 'click_uv']:
             if c not in final.columns: final[c] = 0
             
-        final = final[(final['exposure_uv']>=min_exp) & (final['click_uv']<=final['exposure_uv'])]
+        # V47 移除这里的硬编码过滤，数据保留原始状态
         return final
     except: return None
+
+# --- V47 全局清洗函数 ---
+def filter_dataframe(df, min_exp):
+    """
+    统一的清洗入口：
+    1. 剔除单日曝光 < min_exp 的行
+    2. 剔除点击 > 曝光的行
+    """
+    if df is None: return None
+    # 核心过滤
+    filtered = df[
+        (df['exposure_uv'] >= min_exp) & 
+        (df['click_uv'] <= df['exposure_uv'])
+    ].copy()
+    return filtered
 
 # --- 4. 单文件视图 ---
 def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
@@ -247,7 +261,10 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
         with c1: st.plotly_chart(plot_pie(display.head(8), 'label', 'exposure_uv', "流量 Top 8"), use_container_width=True)
         with c2: 
             top_ctr = display[display['exposure_uv'] > display['exposure_uv'].mean()*0.1].head(10)
-            st.plotly_chart(plot_bar_race(top_ctr, '加权CTR', 'label', "高潜 Top 10"), use_container_width=True)
+            if not top_ctr.empty:
+                st.plotly_chart(plot_bar_race(top_ctr, '加权CTR', 'label', "高潜 Top 10"), use_container_width=True)
+            else:
+                st.info("数据不足以排名")
 
     cols = ['card_id', 'slot_id', '加权CTR', '算术CTR', 'exposure_uv', 'click_uv'] if 'slot_id' in group_cols else ['card_id', '加权CTR', '算术CTR', 'exposure_uv', 'click_uv']
     cols += [c for c in pivot.columns]
@@ -267,9 +284,10 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
         plot_df = plot_df[plot_df['label'].isin(sel)]
         y_col = 'daily_ctr' if metric_choice == "CTR" else 'exposure_uv'
         fmt_str = ".2%" if metric_choice == "CTR" else ".0f"
-        st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True).update_yaxes(tickformat=fmt_str), use_container_width=True)
+        st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True, title=f"每日 {metric_choice} 走势").update_yaxes(tickformat=fmt_str), use_container_width=True)
 
 def show_single_analysis(df, label="表格 A", is_secondary=False):
+    # V47 确保使用的是已经根据全局阈值清洗过的数据 df
     if label == "表格 A":
         key_ex, key_in = "k_ex_a", "k_in_a"
         def_ex, def_in = st.session_state.persist_ex_a, st.session_state.persist_in_a
@@ -291,22 +309,19 @@ def show_single_analysis(df, label="表格 A", is_secondary=False):
             return
 
     all_cards = sorted(df['card_id'].unique())
-    # === V44 核心修复：自动过滤掉不存在的默认值 ===
     valid_def_in = [x for x in def_in if x in all_cards]
     valid_def_ex = [x for x in def_ex if x in all_cards]
 
     col_f1, col_f2 = st.columns(2)
     with col_f1:
-        include_list = st.multiselect("✅ 只看指定卡片 (自动保存)", all_cards, default=valid_def_in, key=key_in, on_change=cb_in)
+        include_list = st.multiselect("✅ 只看指定卡片", all_cards, default=valid_def_in, key=key_in, on_change=cb_in)
     with col_f2:
-        exclude_list = st.multiselect("🚫 剔除指定卡片 (自动保存)", all_cards, default=valid_def_ex, key=key_ex, on_change=cb_ex)
+        exclude_list = st.multiselect("🚫 剔除指定卡片", all_cards, default=valid_def_ex, key=key_ex, on_change=cb_ex)
     
     sub_df_raw = df.copy()
     if include_list: sub_df_raw = sub_df_raw[sub_df_raw['card_id'].isin(include_list)]
     if exclude_list: sub_df_raw = sub_df_raw[~sub_df_raw['card_id'].isin(exclude_list)]
     
-    if include_list or exclude_list: st.caption(f"当前筛选：保留 {len(sub_df_raw['card_id'].unique())} 个卡片。")
-
     min_d, max_d = sub_df_raw['date'].min(), sub_df_raw['date'].max()
     dr = st.date_input("选择周期", [min_d, max_d], key=f"dr_{label}")
     if len(dr) != 2: return
@@ -351,6 +366,7 @@ def show_single_analysis(df, label="表格 A", is_secondary=False):
 
 # --- 5. 双表对比 ---
 def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
+    # d1_raw 和 d2_raw 在传入前已经被全局阈值清洗过了
     st.markdown("### ⚙️ 对比配置")
     mode = st.radio("维度", ["💳 仅卡片", "📍 卡片+坑位"], horizontal=True, key=f"rd_{la}")
     cols = ['card_id'] if "仅" in mode else ['card_id', 'slot_id']
@@ -366,7 +382,6 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         def_ex, def_in = [], []
         cb_ex, cb_in = None, None
 
-    # === V44 核心修复：同样对双表模式做校验 ===
     valid_def_in = [x for x in def_in if x in all_cards]
     valid_def_ex = [x for x in def_ex if x in all_cards]
 
@@ -420,6 +435,7 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         
         diag = "常规"
         if (eb-ea)/ea < -0.2 and (cb-ca)/ca < -0.1: diag = "⚠️ 虚假提效"
+        elif (eb-ea)/ea > 0.2 and (ctrb-ctra) < 0: diag = "🟠 流量稀释"
         elif (ctrb/ctra if ctra else 0) > 1.05 and (cb-ca)/ca > 0: diag = "🟢 有效增长"
         k4.info(diag)
         
@@ -471,11 +487,16 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
 def show_comparison(df1, df2):
     show_comparison_logic(df1, df2)
 
-# --- 主逻辑 ---
-df_a = None
-if file_a: df_a = process_data(file_a, sheet_name_a, visible_only=read_visible_only, min_exp=min_exp_noise)
-df_b = None
-if file_b: df_b = process_data(file_b, sheet_name_b, visible_only=read_visible_only, min_exp=min_exp_noise)
+# --- 主逻辑 (V47 修改：清洗后传入) ---
+df_a_raw = None
+if file_a: df_a_raw = process_data(file_a, sheet_name_a, visible_only=read_visible_only)
+
+df_b_raw = None
+if file_b: df_b_raw = process_data(file_b, sheet_name_b, visible_only=read_visible_only)
+
+# V47 核心：全局应用阈值过滤
+df_a = filter_dataframe(df_a_raw, global_min_exp)
+df_b = filter_dataframe(df_b_raw, global_min_exp)
 
 if df_a is not None:
     if df_b is not None:
