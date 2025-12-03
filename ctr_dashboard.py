@@ -10,23 +10,20 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openpyxl import load_workbook
 
 # --- 页面配置 ---
-st.set_page_config(page_title="CTR 定向聚焦系统 (V43)", layout="wide")
-st.title("🎯 首页卡片 CTR 定向聚焦系统 (V43.0)")
+st.set_page_config(page_title="CTR 智能防崩系统 (V44)", layout="wide")
+st.title("🎯 首页卡片 CTR 智能防崩系统 (V44.0)")
 
 # ==========================================
-# 🧠 0. 状态记忆初始化 (V43 双重记忆)
+# 🧠 0. 状态记忆初始化
 # ==========================================
-# 剔除 (Exclude) 记忆
 if 'persist_ex_a' not in st.session_state: st.session_state.persist_ex_a = []
 if 'persist_ex_b' not in st.session_state: st.session_state.persist_ex_b = []
 if 'persist_ex_dual' not in st.session_state: st.session_state.persist_ex_dual = []
 
-# 只看 (Include) 记忆 - V43新增
 if 'persist_in_a' not in st.session_state: st.session_state.persist_in_a = []
 if 'persist_in_b' not in st.session_state: st.session_state.persist_in_b = []
 if 'persist_in_dual' not in st.session_state: st.session_state.persist_in_dual = []
 
-# 回调函数
 def update_ex_a(): st.session_state.persist_ex_a = st.session_state.k_ex_a
 def update_ex_b(): st.session_state.persist_ex_b = st.session_state.k_ex_b
 def update_ex_dual(): st.session_state.persist_ex_dual = st.session_state.k_ex_dual
@@ -36,7 +33,7 @@ def update_in_b(): st.session_state.persist_in_b = st.session_state.k_in_b
 def update_in_dual(): st.session_state.persist_in_dual = st.session_state.k_in_dual
 
 # ==========================================
-# 🛠️ 绘图与工具函数 (保持全功能)
+# 🛠️ 绘图与工具函数
 # ==========================================
 def plot_dual_axis(df, x_col, bar_col, line_col, title):
     fig = go.Figure()
@@ -273,7 +270,6 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
         st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True).update_yaxes(tickformat=fmt_str), use_container_width=True)
 
 def show_single_analysis(df, label="表格 A", is_secondary=False):
-    # 配置记忆 Key
     if label == "表格 A":
         key_ex, key_in = "k_ex_a", "k_in_a"
         def_ex, def_in = st.session_state.persist_ex_a, st.session_state.persist_in_a
@@ -282,7 +278,7 @@ def show_single_analysis(df, label="表格 A", is_secondary=False):
         key_ex, key_in = "k_ex_b", "k_in_b"
         def_ex, def_in = st.session_state.persist_ex_b, st.session_state.persist_in_b
         cb_ex, cb_in = update_ex_b, update_in_b
-    else: # 内部对比模式 (不记忆)
+    else: 
         key_ex, key_in = f"ex_{label}", f"in_{label}"
         def_ex, def_in = [], []
         cb_ex, cb_in = None, None
@@ -294,15 +290,17 @@ def show_single_analysis(df, label="表格 A", is_secondary=False):
             show_comparison_logic(df, df, f"{label}-A", f"{label}-B")
             return
 
-    # === V43 筛选器 (只看 + 剔除) ===
     all_cards = sorted(df['card_id'].unique())
+    # === V44 核心修复：自动过滤掉不存在的默认值 ===
+    valid_def_in = [x for x in def_in if x in all_cards]
+    valid_def_ex = [x for x in def_ex if x in all_cards]
+
     col_f1, col_f2 = st.columns(2)
     with col_f1:
-        include_list = st.multiselect("✅ 只看指定卡片 (白名单)", all_cards, default=def_in, key=key_in, on_change=cb_in)
+        include_list = st.multiselect("✅ 只看指定卡片 (自动保存)", all_cards, default=valid_def_in, key=key_in, on_change=cb_in)
     with col_f2:
-        exclude_list = st.multiselect("🚫 剔除指定卡片 (黑名单)", all_cards, default=def_ex, key=key_ex, on_change=cb_ex)
+        exclude_list = st.multiselect("🚫 剔除指定卡片 (自动保存)", all_cards, default=valid_def_ex, key=key_ex, on_change=cb_ex)
     
-    # 逻辑过滤
     sub_df_raw = df.copy()
     if include_list: sub_df_raw = sub_df_raw[sub_df_raw['card_id'].isin(include_list)]
     if exclude_list: sub_df_raw = sub_df_raw[~sub_df_raw['card_id'].isin(exclude_list)]
@@ -331,7 +329,7 @@ def show_single_analysis(df, label="表格 A", is_secondary=False):
     
     if not is_secondary:
         global GLOBAL_DATA_CONTEXT
-        GLOBAL_DATA_CONTEXT = f"单表:{label}, CTR:{ctr_w:.2%}, 曝光:{e_tot}"
+        GLOBAL_DATA_CONTEXT = f"单表:{label}, 剔除:{exclude_list}, CTR:{ctr_w:.2%}, 曝光:{e_tot}"
     
     st.divider()
     t1, t2 = st.tabs(["💳 视图:只看卡片", "📍 视图:细分坑位"])
@@ -357,25 +355,27 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
     mode = st.radio("维度", ["💳 仅卡片", "📍 卡片+坑位"], horizontal=True, key=f"rd_{la}")
     cols = ['card_id'] if "仅" in mode else ['card_id', 'slot_id']
     
-    # === V43 筛选器 (双表模式) ===
     all_cards = sorted(list(set(d1_raw['card_id'])|set(d2_raw['card_id'])))
     
-    if la == "表格A": # True Dual Mode
+    if la == "表格A": 
         key_ex, key_in = "k_ex_dual", "k_in_dual"
         def_ex, def_in = st.session_state.persist_ex_dual, st.session_state.persist_in_dual
         cb_ex, cb_in = update_ex_dual, update_in_dual
-    else: # Internal Compare
+    else: 
         key_ex, key_in = f"ex_{la}", f"in_{la}"
         def_ex, def_in = [], []
         cb_ex, cb_in = None, None
 
+    # === V44 核心修复：同样对双表模式做校验 ===
+    valid_def_in = [x for x in def_in if x in all_cards]
+    valid_def_ex = [x for x in def_ex if x in all_cards]
+
     col_f1, col_f2 = st.columns(2)
     with col_f1:
-        inc = st.multiselect("✅ 只看指定卡片", all_cards, default=def_in, key=key_in, on_change=cb_in)
+        inc = st.multiselect("✅ 只看指定卡片", all_cards, default=valid_def_in, key=key_in, on_change=cb_in)
     with col_f2:
-        excl = st.multiselect("🚫 剔除指定卡片", all_cards, default=def_ex, key=key_ex, on_change=cb_ex)
+        excl = st.multiselect("🚫 剔除指定卡片", all_cards, default=valid_def_ex, key=key_ex, on_change=cb_ex)
     
-    # 逻辑过滤
     d1, d2 = d1_raw.copy(), d2_raw.copy()
     if inc:
         d1 = d1[d1['card_id'].isin(inc)]
@@ -447,10 +447,11 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         c_c1, c_c2 = st.columns(2)
         valid = comp[comp['Status']=='延续']
         
+        if 'slot_id' in cols: valid['L'] = valid['card_id'] + " (" + valid['slot_id'] + ")"
+        else: valid['L'] = valid['card_id']
+        
         with c_c1:
             top10 = valid.sort_values('Exp_B', ascending=False).head(10)
-            if 'slot_id' in cols: top10['L'] = top10['card_id'] + " (" + top10['slot_id'] + ")"
-            else: top10['L'] = top10['card_id']
             if not top10.empty:
                 st.plotly_chart(plot_paired_bar(top10, 'L', 'CTR_A', 'CTR_B', "Top 10 流量卡片 CTR 对比"), use_container_width=True)
             
@@ -458,8 +459,6 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
             top5 = valid.sort_values('Diff', ascending=False).head(5)
             bot5 = valid.sort_values('Diff', ascending=True).head(5)
             imp = pd.concat([top5, bot5])
-            if 'slot_id' in cols: imp['L'] = imp['card_id'] + " (" + imp['slot_id'] + ")"
-            else: imp['L'] = imp['card_id']
             if not imp.empty:
                 st.plotly_chart(plot_impact_diverging(imp, 'L', 'Diff', "涨跌幅红黑榜"), use_container_width=True)
 
@@ -470,10 +469,9 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         with c_e2: st.download_button("📊 Excel", generate_excel({"Comp": comp}), f"Dat_{la}.xlsx", key=f"be_{la}")
 
 def show_comparison(df1, df2):
-    show_comparison_logic(df1, df2, "表格A", "表格B")
+    show_comparison_logic(df1, df2)
 
 # --- 主逻辑 ---
-# V42 传递 min_exp_noise 到 process_data，确保缓存刷新
 df_a = None
 if file_a: df_a = process_data(file_a, sheet_name_a, visible_only=read_visible_only, min_exp=min_exp_noise)
 df_b = None
