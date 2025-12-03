@@ -10,22 +10,39 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openpyxl import load_workbook
 
 # --- 页面配置 ---
-st.set_page_config(page_title="CTR 终极分析系统 (V41)", layout="wide")
-st.title("🎯 首页卡片 CTR 终极分析系统 (V41.0 全局剔除版)")
+st.set_page_config(page_title="CTR 定向聚焦系统 (V43)", layout="wide")
+st.title("🎯 首页卡片 CTR 定向聚焦系统 (V43.0)")
 
 # ==========================================
-# 🛠️ 绘图与工具函数
+# 🧠 0. 状态记忆初始化 (V43 双重记忆)
+# ==========================================
+# 剔除 (Exclude) 记忆
+if 'persist_ex_a' not in st.session_state: st.session_state.persist_ex_a = []
+if 'persist_ex_b' not in st.session_state: st.session_state.persist_ex_b = []
+if 'persist_ex_dual' not in st.session_state: st.session_state.persist_ex_dual = []
+
+# 只看 (Include) 记忆 - V43新增
+if 'persist_in_a' not in st.session_state: st.session_state.persist_in_a = []
+if 'persist_in_b' not in st.session_state: st.session_state.persist_in_b = []
+if 'persist_in_dual' not in st.session_state: st.session_state.persist_in_dual = []
+
+# 回调函数
+def update_ex_a(): st.session_state.persist_ex_a = st.session_state.k_ex_a
+def update_ex_b(): st.session_state.persist_ex_b = st.session_state.k_ex_b
+def update_ex_dual(): st.session_state.persist_ex_dual = st.session_state.k_ex_dual
+
+def update_in_a(): st.session_state.persist_in_a = st.session_state.k_in_a
+def update_in_b(): st.session_state.persist_in_b = st.session_state.k_in_b
+def update_in_dual(): st.session_state.persist_in_dual = st.session_state.k_in_dual
+
+# ==========================================
+# 🛠️ 绘图与工具函数 (保持全功能)
 # ==========================================
 def plot_dual_axis(df, x_col, bar_col, line_col, title):
     fig = go.Figure()
     fig.add_trace(go.Bar(x=df[x_col], y=df[bar_col], name="总曝光", marker_color='#A9CCE3', opacity=0.6, yaxis='y1'))
     fig.add_trace(go.Scatter(x=df[x_col], y=df[line_col], name="CTR", mode='lines+markers', line=dict(color='#E74C3C', width=3), marker=dict(size=8), yaxis='y2'))
-    fig.update_layout(
-        title=title, xaxis_title="日期", 
-        yaxis=dict(title="曝光", side="left", showgrid=False), 
-        yaxis2=dict(title="CTR", side="right", overlaying="y", tickformat=".2%", showgrid=True), 
-        hovermode="x unified", legend=dict(orientation="h", y=1.1), template="plotly_white", height=400
-    )
+    fig.update_layout(title=title, xaxis_title="日期", yaxis=dict(title="曝光", side="left", showgrid=False), yaxis2=dict(title="CTR", side="right", overlaying="y", tickformat=".2%", showgrid=True), hovermode="x unified", legend=dict(orientation="h", y=1.1), template="plotly_white", height=400)
     return fig
 
 def plot_bar_race(df, x_col, y_col, title):
@@ -158,7 +175,7 @@ def extract_start_date(s):
     return s
 
 @st.cache_data
-def process_data(file, sheet_name=0, visible_only=False):
+def process_data(file, sheet_name=0, visible_only=False, min_exp=50):
     try:
         if visible_only:
             wb = load_workbook(file, data_only=True, read_only=False)
@@ -204,10 +221,12 @@ def process_data(file, sheet_name=0, visible_only=False):
         final = melted.pivot_table(index=['date', 'card_id', 'slot_id'], columns='type', values='count', aggfunc='sum').reset_index()
         for c in ['exposure_uv', 'click_uv']:
             if c not in final.columns: final[c] = 0
-        return final[(final['exposure_uv']>=min_exp_noise) & (final['click_uv']<=final['exposure_uv'])]
+            
+        final = final[(final['exposure_uv']>=min_exp) & (final['click_uv']<=final['exposure_uv'])]
+        return final
     except: return None
 
-# --- 4. 单文件视图 (Dashboard) ---
+# --- 4. 单文件视图 ---
 def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
     period = data.groupby(group_cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
     period['加权CTR'] = period['click_uv']/period['exposure_uv']
@@ -243,49 +262,57 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
 
     st.markdown("#### 📈 趋势下钻")
     sel = st.multiselect(f"选择对象 ({view_name})", display['label'].unique(), key=f"ms_{unique_key_prefix}")
-    
-    # === V41 新增：趋势指标切换 ===
     if sel:
-        metric_choice = st.radio("选择趋势指标:", ["✨ CTR (点击率)", "📊 曝光量 (UV)"], horizontal=True, key=f"rad_{unique_key_prefix}")
-        
+        metric_choice = st.radio("指标:", ["CTR", "曝光"], horizontal=True, key=f"rd_{unique_key_prefix}")
         plot_df = daily.copy()
         if 'slot_id' in group_cols: plot_df['label'] = plot_df['card_id'] + " (" + plot_df['slot_id'] + ")"
         else: plot_df['label'] = plot_df['card_id']
         plot_df = plot_df[plot_df['label'].isin(sel)]
-        
-        if "CTR" in metric_choice:
-            y_col = 'daily_ctr'
-            fmt_str = ".2%"
-            title = "每日 CTR 走势"
-        else:
-            y_col = 'exposure_uv'
-            fmt_str = ".0f"
-            title = "每日 曝光量 走势"
-            
-        st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True, title=title).update_yaxes(tickformat=fmt_str), use_container_width=True)
+        y_col = 'daily_ctr' if metric_choice == "CTR" else 'exposure_uv'
+        fmt_str = ".2%" if metric_choice == "CTR" else ".0f"
+        st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True).update_yaxes(tickformat=fmt_str), use_container_width=True)
 
-def show_single_analysis(df, label="表格 A"):
+def show_single_analysis(df, label="表格 A", is_secondary=False):
+    # 配置记忆 Key
+    if label == "表格 A":
+        key_ex, key_in = "k_ex_a", "k_in_a"
+        def_ex, def_in = st.session_state.persist_ex_a, st.session_state.persist_in_a
+        cb_ex, cb_in = update_ex_a, update_in_a
+    elif label == "表格 B":
+        key_ex, key_in = "k_ex_b", "k_in_b"
+        def_ex, def_in = st.session_state.persist_ex_b, st.session_state.persist_in_b
+        cb_ex, cb_in = update_ex_b, update_in_b
+    else: # 内部对比模式 (不记忆)
+        key_ex, key_in = f"ex_{label}", f"in_{label}"
+        def_ex, def_in = [], []
+        cb_ex, cb_in = None, None
+
     st.markdown(f"## 🔎 {label} - 深度分析")
     
-    if st.checkbox("⚔️ 开启表内对比", key=f"sw_{label}"):
-        show_comparison_logic(df, df, f"{label}-A", f"{label}-B")
-        return
+    if not is_secondary:
+        if st.checkbox("⚔️ 开启表内对比", key=f"sw_{label}"):
+            show_comparison_logic(df, df, f"{label}-A", f"{label}-B")
+            return
 
-    # === V41 新增：单文件手动剔除 ===
+    # === V43 筛选器 (只看 + 剔除) ===
     all_cards = sorted(df['card_id'].unique())
-    exclude_list = st.multiselect("🚫 剔除指定卡片 (实时重算)", all_cards, key=f"ex_single_{label}")
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        include_list = st.multiselect("✅ 只看指定卡片 (白名单)", all_cards, default=def_in, key=key_in, on_change=cb_in)
+    with col_f2:
+        exclude_list = st.multiselect("🚫 剔除指定卡片 (黑名单)", all_cards, default=def_ex, key=key_ex, on_change=cb_ex)
     
-    if exclude_list:
-        sub_df_raw = df[~df['card_id'].isin(exclude_list)].copy()
-        st.caption(f"已剔除 {len(exclude_list)} 个卡片，下方数据已重新计算。")
-    else:
-        sub_df_raw = df.copy()
+    # 逻辑过滤
+    sub_df_raw = df.copy()
+    if include_list: sub_df_raw = sub_df_raw[sub_df_raw['card_id'].isin(include_list)]
+    if exclude_list: sub_df_raw = sub_df_raw[~sub_df_raw['card_id'].isin(exclude_list)]
+    
+    if include_list or exclude_list: st.caption(f"当前筛选：保留 {len(sub_df_raw['card_id'].unique())} 个卡片。")
 
     min_d, max_d = sub_df_raw['date'].min(), sub_df_raw['date'].max()
     dr = st.date_input("选择周期", [min_d, max_d], key=f"dr_{label}")
     if len(dr) != 2: return
     
-    # 最终计算用的数据
     sub = sub_df_raw[(sub_df_raw['date']>=dr[0]) & (sub_df_raw['date']<=dr[1])].copy()
     
     e_tot = sub['exposure_uv'].sum()
@@ -302,13 +329,9 @@ def show_single_analysis(df, label="表格 A"):
     c2.metric("总点击", f"{c_tot:,.0f}")
     c3.metric("加权均值 CTR", f"{ctr_w:.2%}")
     
-    global GLOBAL_DATA_CONTEXT
-    GLOBAL_DATA_CONTEXT = f"单表:{label}, 剔除:{exclude_list}, CTR:{ctr_w:.2%}, 曝光:{e_tot}"
-    
-    export_df = sub.groupby(['card_id', 'slot_id']).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
-    export_df['weighted_ctr'] = export_df['click_uv'] / export_df['exposure_uv']
-    export_df = export_df.sort_values('exposure_uv', ascending=False)
-    top_5 = export_df.head(5).rename(columns={'card_id':'卡片ID', 'weighted_ctr':'CTR', 'exposure_uv':'曝光'})
+    if not is_secondary:
+        global GLOBAL_DATA_CONTEXT
+        GLOBAL_DATA_CONTEXT = f"单表:{label}, CTR:{ctr_w:.2%}, 曝光:{e_tot}"
     
     st.divider()
     t1, t2 = st.tabs(["💳 视图:只看卡片", "📍 视图:细分坑位"])
@@ -318,6 +341,11 @@ def show_single_analysis(df, label="表格 A"):
     st.divider()
     st.header("📥 导出中心")
     c_e1, c_e2 = st.columns(2)
+    export_df = sub.groupby(['card_id', 'slot_id']).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
+    export_df['weighted_ctr'] = export_df['click_uv'] / export_df['exposure_uv']
+    export_df = export_df.sort_values('exposure_uv', ascending=False)
+    top_5 = export_df.head(5).rename(columns={'card_id':'卡片ID', 'weighted_ctr':'CTR', 'exposure_uv':'曝光'})
+    
     word_file = generate_word_report(f"报告-{manual_country}", {"周期": str(dr), "曝光": f"{e_tot:,.0f}", "CTR": f"{ctr_w:.2%}"}, "数据详见附表", {"Top5": top_5})
     excel_file = generate_excel({"聚合": export_df, "明细": sub})
     with c_e1: st.download_button("📄 Word 报告", word_file, f"Report_{label}.docx", key=f"bw_{label}")
@@ -329,11 +357,32 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
     mode = st.radio("维度", ["💳 仅卡片", "📍 卡片+坑位"], horizontal=True, key=f"rd_{la}")
     cols = ['card_id'] if "仅" in mode else ['card_id', 'slot_id']
     
-    excl = st.multiselect("🚫 剔除卡片", sorted(list(set(d1_raw['card_id'])|set(d2_raw['card_id']))), key=f"ex_{la}")
+    # === V43 筛选器 (双表模式) ===
+    all_cards = sorted(list(set(d1_raw['card_id'])|set(d2_raw['card_id'])))
+    
+    if la == "表格A": # True Dual Mode
+        key_ex, key_in = "k_ex_dual", "k_in_dual"
+        def_ex, def_in = st.session_state.persist_ex_dual, st.session_state.persist_in_dual
+        cb_ex, cb_in = update_ex_dual, update_in_dual
+    else: # Internal Compare
+        key_ex, key_in = f"ex_{la}", f"in_{la}"
+        def_ex, def_in = [], []
+        cb_ex, cb_in = None, None
+
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        inc = st.multiselect("✅ 只看指定卡片", all_cards, default=def_in, key=key_in, on_change=cb_in)
+    with col_f2:
+        excl = st.multiselect("🚫 剔除指定卡片", all_cards, default=def_ex, key=key_ex, on_change=cb_ex)
+    
+    # 逻辑过滤
+    d1, d2 = d1_raw.copy(), d2_raw.copy()
+    if inc:
+        d1 = d1[d1['card_id'].isin(inc)]
+        d2 = d2[d2['card_id'].isin(inc)]
     if excl:
-        d1 = d1_raw[~d1_raw['card_id'].isin(excl)].copy()
-        d2 = d2_raw[~d2_raw['card_id'].isin(excl)].copy()
-    else: d1, d2 = d1_raw.copy(), d2_raw.copy()
+        d1 = d1[~d1['card_id'].isin(excl)]
+        d2 = d2[~d2['card_id'].isin(excl)]
     
     c1, c2 = st.columns(2)
     dr1 = c1.date_input(f"{la} 时间", [d1['date'].min(), d1['date'].max()], key=f"d1_{la}")
@@ -402,7 +451,8 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
             top10 = valid.sort_values('Exp_B', ascending=False).head(10)
             if 'slot_id' in cols: top10['L'] = top10['card_id'] + " (" + top10['slot_id'] + ")"
             else: top10['L'] = top10['card_id']
-            st.plotly_chart(plot_paired_bar(top10, 'L', 'CTR_A', 'CTR_B', "Top 10 流量卡片 CTR 对比"), use_container_width=True)
+            if not top10.empty:
+                st.plotly_chart(plot_paired_bar(top10, 'L', 'CTR_A', 'CTR_B', "Top 10 流量卡片 CTR 对比"), use_container_width=True)
             
         with c_c2:
             top5 = valid.sort_values('Diff', ascending=False).head(5)
@@ -410,7 +460,8 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
             imp = pd.concat([top5, bot5])
             if 'slot_id' in cols: imp['L'] = imp['card_id'] + " (" + imp['slot_id'] + ")"
             else: imp['L'] = imp['card_id']
-            st.plotly_chart(plot_impact_diverging(imp, 'L', 'Diff', "涨跌幅红黑榜"), use_container_width=True)
+            if not imp.empty:
+                st.plotly_chart(plot_impact_diverging(imp, 'L', 'Diff', "涨跌幅红黑榜"), use_container_width=True)
 
         st.dataframe(comp.style.format({'CTR_A':'{:.2%}', 'CTR_B':'{:.2%}', 'Diff':'{:.2%}'}).background_gradient(subset=['Diff'], cmap='RdYlGn', vmin=-0.02, vmax=0.02), use_container_width=True)
         
@@ -419,13 +470,14 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         with c_e2: st.download_button("📊 Excel", generate_excel({"Comp": comp}), f"Dat_{la}.xlsx", key=f"be_{la}")
 
 def show_comparison(df1, df2):
-    show_comparison_logic(df1, df2)
+    show_comparison_logic(df1, df2, "表格A", "表格B")
 
 # --- 主逻辑 ---
+# V42 传递 min_exp_noise 到 process_data，确保缓存刷新
 df_a = None
-if file_a: df_a = process_data(file_a, sheet_name_a, visible_only=read_visible_only)
+if file_a: df_a = process_data(file_a, sheet_name_a, visible_only=read_visible_only, min_exp=min_exp_noise)
 df_b = None
-if file_b: df_b = process_data(file_b, sheet_name_b, visible_only=read_visible_only)
+if file_b: df_b = process_data(file_b, sheet_name_b, visible_only=read_visible_only, min_exp=min_exp_noise)
 
 if df_a is not None:
     if df_b is not None:
@@ -433,8 +485,9 @@ if df_a is not None:
         st.divider()
         if mode == "📄 单文件分析":
             t1, t2 = st.tabs(["表格 A", "表格 B"])
+            # 标记 is_secondary 以避免全局变量覆盖问题
             with t1: show_single_analysis(df_a, "表格 A")
-            with t2: show_single_analysis(df_b, "表格 B")
+            with t2: show_single_analysis(df_b, "表格 B", is_secondary=True)
         else:
             show_comparison(df_a, df_b)
     else:
