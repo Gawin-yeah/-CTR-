@@ -10,8 +10,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openpyxl import load_workbook
 
 # --- 页面配置 ---
-st.set_page_config(page_title="CTR 稳定修复系统 (V52)", layout="wide")
-st.title("🎯 首页卡片 CTR 稳定修复系统 (V52.0)")
+st.set_page_config(page_title="CTR 终极修复系统 (V54)", layout="wide")
+st.title("🎯 首页卡片 CTR 终极修复系统 (V54.0)")
 
 # ==========================================
 # 🧠 0. 状态记忆
@@ -235,27 +235,29 @@ def process_data(file, sheet_name=0, visible_only=False, min_exp=50):
         return final[(final['exposure_uv']>=min_exp) & (final['click_uv']<=final['exposure_uv'])]
     except: return None
 
-# === V47 全局清洗函数 ===
 def filter_dataframe(df, min_exp):
     if df is None: return None
     return df[(df['exposure_uv'] >= min_exp) & (df['click_uv'] <= df['exposure_uv'])].copy()
 
-# --- 4. 单文件视图 ---
+# --- 4. 单文件视图 (V54 终极修复：统一列名 & 交互回归) ---
 def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
+    # 1. 聚合
     period = data.groupby(group_cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
+    # V54 修复：统一列名为 '加权CTR' (短名)
     period['加权CTR'] = period['click_uv']/period['exposure_uv']
     
+    # 2. 每日数据
     daily = data.groupby(group_cols + ['date']).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
     daily['daily_ctr'] = daily['click_uv']/daily['exposure_uv']
     
+    # V54 修复：统一列名为 '算术CTR' (短名)
     arith = daily.groupby(group_cols)['daily_ctr'].mean().reset_index().rename(columns={'daily_ctr':'算术CTR'})
-    pivot = daily.pivot_table(index=group_cols, columns='date', values='daily_ctr', aggfunc='mean')
-    pivot.columns = [d.strftime('%m-%d') for d in pivot.columns]
     
+    # 3. 合并
     merged = pd.merge(period, arith, on=group_cols, how='left')
-    merged = pd.merge(merged, pivot, on=group_cols, how='left').sort_values('exposure_uv', ascending=False)
     
-    display = merged.copy()
+    # 4. Dashboard
+    display = merged.copy().sort_values('exposure_uv', ascending=False)
     if 'slot_id' in group_cols: display['label'] = display['card_id'] + " (" + display['slot_id'] + ")"
     else: display['label'] = display['card_id']
     
@@ -269,6 +271,7 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
             else:
                 st.info("数据不足以排名")
 
+    # === V54 回归：大屏搜索 & 每日指标切换 ===
     st.markdown("---")
     st.markdown(f"#### 📋 详细数据透视 ({view_name})")
     
@@ -287,9 +290,11 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
         
     pivot = daily.pivot_table(index=group_cols, columns='date', values=val_col, aggfunc='sum' if val_col != 'daily_ctr' else 'mean')
     pivot.columns = [d.strftime('%m-%d') for d in pivot.columns]
+    
     final_display = pd.merge(display, pivot, on=group_cols, how='left')
     
-    if search_vals: final_display = final_display[final_display['label'].isin(search_vals)]
+    if search_vals:
+        final_display = final_display[final_display['label'].isin(search_vals)]
     
     cols = ['card_id', 'slot_id', '加权CTR', '算术CTR', 'exposure_uv', 'click_uv'] if 'slot_id' in group_cols else ['card_id', '加权CTR', '算术CTR', 'exposure_uv', 'click_uv']
     cols += [c for c in pivot.columns]
@@ -299,18 +304,20 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
     
     st.dataframe(final_display[cols].style.format(fmt).background_gradient(subset=['加权CTR'], cmap='RdYlGn', axis=0), use_container_width=True, height=500)
 
+    # === V54 回归：趋势下钻 (含点击量) ===
     st.markdown("#### 📈 趋势下钻")
     default_trend = search_vals if search_vals else []
     sel = st.multiselect(f"选择对象画图", display['label'].unique(), default=default_trend, key=f"ms_{unique_key_prefix}")
+    
     if sel:
-        metric_choice = st.radio("指标:", ["CTR", "曝光", "点击"], horizontal=True, key=f"rd_{unique_key_prefix}")
+        metric_choice = st.radio("趋势指标:", ["✨ CTR", "📊 曝光量", "👆 点击量"], horizontal=True, key=f"rd_{unique_key_prefix}")
         plot_df = daily.copy()
         if 'slot_id' in group_cols: plot_df['label'] = plot_df['card_id'] + " (" + plot_df['slot_id'] + ")"
         else: plot_df['label'] = plot_df['card_id']
         plot_df = plot_df[plot_df['label'].isin(sel)]
         
-        if metric_choice == "CTR": y_col, fmt_p = 'daily_ctr', ".2%"
-        elif metric_choice == "曝光": y_col, fmt_p = 'exposure_uv', ".0f"
+        if metric_choice == "✨ CTR": y_col, fmt_p = 'daily_ctr', ".2%"
+        elif metric_choice == "📊 曝光量": y_col, fmt_p = 'exposure_uv', ".0f"
         else: y_col, fmt_p = 'click_uv', ".0f"
             
         st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True, title=f"每日 {metric_choice} 走势").update_yaxes(tickformat=fmt_p), use_container_width=True)
@@ -392,7 +399,7 @@ def show_single_analysis(df, label="表格 A", is_secondary=False):
     with c_e1: st.download_button("📄 Word 报告", word_file, f"Report_{label}.docx", key=f"bw_{label}")
     with c_e2: st.download_button("📊 Excel 数据", excel_file, f"Data_{label}.xlsx", key=f"be_{label}")
 
-# --- 5. 双表对比 ---
+# --- 5. 双表对比 (V53 智能归因 + V54 修复) ---
 def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
     st.markdown("### ⚙️ 对比配置")
     mode = st.radio("维度", ["💳 仅卡片", "📍 卡片+坑位"], horizontal=True, key=f"rd_{la}")
@@ -434,10 +441,6 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         d1f = d1[(d1['date']>=dr1[0])&(d1['date']<=dr1[1])]
         d2f = d2[(d2['date']>=dr2[0])&(d2['date']<=dr2[1])]
         
-        # === V50 归因模型 ===
-        st.divider()
-        st.subheader("📊 战略归因分析")
-        
         s1 = d1f.groupby(cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
         s2 = d2f.groupby(cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
         
@@ -459,19 +462,28 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         rate_eff = df_m[df_m['IsCommon']].apply(lambda r: (r['CTRB']-r['CTRA'])*r['WA'], axis=1).sum()
         mix_eff = df_m[df_m['IsCommon']].apply(lambda r: (r['WB']-r['WA'])*r['CTRA'], axis=1).sum()
         new_eff = df_m[df_m['IsNew']].apply(lambda r: (r['CTRB']-ctra)*r['WB'], axis=1).sum()
-        lost_eff = df_m[df_m['IsLost']].apply(lambda r: (ctra-r['CTRA'])*r['WA'], axis=1).sum()
         
         df_m['Contrib'] = (df_m['click_uv_B']/teb if teb>0 else 0) - (df_m['click_uv_A']/tea if tea>0 else 0)
         
         ctr_diff = ctrb - ctra
-        # === 修复 plot_waterfall 调用参数名 ===
         wf_df = pd.DataFrame({
             "measure": ["absolute", "relative", "relative", "relative", "relative", "total"],
-            "category": ["A", "质量效应", "结构效应", "新卡红利", "下架/其他", "B"],
+            "category": ["A (基准)", "存量表现", "流量结构", "新卡红利", "下架/其他", "B (当前)"],
             "value": [ctra, rate_eff, mix_eff, new_eff, ctrb-ctra-rate_eff-mix_eff-new_eff, None],
             "text_val": [f"{ctra:.2%}", f"{rate_eff:+.2%}", f"{mix_eff:+.2%}", f"{new_eff:+.2%}", "Diff", f"{ctrb:.2%}"]
         })
         
+        conclusion = ""
+        if ctr_diff > 0:
+            if new_eff > abs(rate_eff) and rate_eff < 0:
+                conclusion = "🚀 **新卡驱动型**：本周期 CTR 提升主要是由**新素材**驱动的。\n⚠️ **警惕**：存量老卡片表现疲软（存量表现为负），且流量分配效率可能下降。"
+            elif rate_eff > 0 and new_eff > 0:
+                conclusion = "🌟 **全面普涨**：存量卡片质量提升，且新卡表现优异，业务处于健康增长期。"
+            else:
+                conclusion = "📈 **稳步增长**：各项指标均为正向贡献。"
+        else:
+            conclusion = "📉 **大盘回落**：需关注负向贡献最大的因子。"
+
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("CTR", f"{ctrb:.2%}", f"{ctrb-ctra:+.2%}")
         k2.metric("倍数", f"{ctrb/ctra:.2f}x" if ctra>0 else "∞")
@@ -479,8 +491,12 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         k4.metric("点击", f"{tcb:,.0f}", f"{(tcb-tca)/tca:+.1%}" if tca>0 else "∞")
         
         c_w, c_t = st.columns([2, 1])
-        with c_w: st.plotly_chart(plot_waterfall(wf_df, "CTR 涨跌归因瀑布"), use_container_width=True)
-        with c_t: st.info(f"**核心结论**：\nCTR 变化 {ctrb-ctra:+.2%}。\n主要由 **{'质量优化' if abs(rate_eff)>abs(mix_eff) else '流量结构'}** 驱动。\n新卡带来增量: {new_eff:+.2%}。")
+        with c_w: 
+            st.plotly_chart(plot_waterfall(wf_df, "CTR 涨跌归因瀑布"), use_container_width=True)
+            with st.expander("📖 读懂这张图 (名词解释)"):
+                st.markdown("- **存量表现**: 老卡片自身 CTR 变化的影响。\n- **流量结构**: 流量分配变化带来的影响。\n- **新卡红利**: 新上架卡片带来的增量。")
+        with c_t: 
+            st.success(f"**🤖 智能诊断**：\n\n{conclusion}")
 
         st.divider()
         st.subheader("🔎 量效气泡图 (存量卡片)")
@@ -489,12 +505,12 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
             valid_scatter['ExpChg'] = (valid_scatter['exposure_uv_B'] - valid_scatter['exposure_uv_A']) / (valid_scatter['exposure_uv_A'] + 1)
             valid_scatter['CTRChg'] = valid_scatter['CTRB'] - valid_scatter['CTRA']
             valid_scatter['label'] = valid_scatter['card_id']
-            fig = px.scatter(valid_scatter, x="ExpChg", y="CTRChg", hover_name="label", size="exposure_uv_B", color="Contrib", color_continuous_scale="RdYlGn", title="曝光变化 vs CTR变化 (右上角=量价齐升)")
+            fig = px.scatter(valid_scatter, x="ExpChg", y="CTRChg", hover_name="label", size="exposure_uv_B", color="Contrib", color_continuous_scale="RdYlGn", title="曝光变化 vs CTR变化")
             fig.add_hline(y=0, line_dash="dash"); fig.add_vline(x=0, line_dash="dash")
             fig.update_xaxes(tickformat=".0%"); fig.update_yaxes(tickformat=".2%")
             st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader("🏆 贡献度排行榜 (Contribution)")
+        st.subheader("🏆 贡献度排行榜")
         def get_stat_label(r):
             if r['IsNew']: return '🟢 New'
             if r['IsLost']: return '🔴 Lost'
@@ -516,7 +532,7 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         
         st.divider()
         c_e1, c_e2 = st.columns(2)
-        word_file = generate_word_report(f"归因战报-{manual_country}", {"CTR变化": f"{ctra:.2%}->{ctrb:.2%}"}, "详见瀑布图", {"贡献榜": df_m.head(5)})
+        word_file = generate_word_report(f"归因战报-{manual_country}", {"CTR变化": f"{ctra:.2%}->{ctrb:.2%}"}, conclusion, {"贡献榜": df_m.head(5)})
         excel_file = generate_excel({"归因明细": df_m})
         with c_e1: st.download_button("📄 Word", word_file, f"Report_{la}.docx", key=f"bw_{la}")
         with c_e2: st.download_button("📊 Excel", excel_file, f"Data_{la}.xlsx", key=f"be_{la}")
