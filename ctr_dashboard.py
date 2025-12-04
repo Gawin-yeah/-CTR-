@@ -10,8 +10,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openpyxl import load_workbook
 
 # --- 页面配置 ---
-st.set_page_config(page_title="CTR 完美全家桶 (V51)", layout="wide")
-st.title("🎯 首页卡片 CTR 完美全家桶 (V51.0)")
+st.set_page_config(page_title="CTR 稳定修复系统 (V52)", layout="wide")
+st.title("🎯 首页卡片 CTR 稳定修复系统 (V52.0)")
 
 # ==========================================
 # 🧠 0. 状态记忆
@@ -177,7 +177,7 @@ if file_b:
     except: pass
 
 st.sidebar.markdown("---")
-min_exp_noise = st.sidebar.number_input("📉 单日最小曝光阈值 (去噪)", value=50, step=50)
+min_exp_noise = st.sidebar.number_input("📉 单日最小曝光阈值 (去噪)", value=50, step=10)
 
 def extract_start_date(s):
     s = str(s).strip()
@@ -232,9 +232,10 @@ def process_data(file, sheet_name=0, visible_only=False, min_exp=50):
         final = melted.pivot_table(index=['date', 'card_id', 'slot_id'], columns='type', values='count', aggfunc='sum').reset_index()
         for c in ['exposure_uv', 'click_uv']:
             if c not in final.columns: final[c] = 0
-        return final # V47: Filter moved to main logic
+        return final[(final['exposure_uv']>=min_exp) & (final['click_uv']<=final['exposure_uv'])]
     except: return None
 
+# === V47 全局清洗函数 ===
 def filter_dataframe(df, min_exp):
     if df is None: return None
     return df[(df['exposure_uv'] >= min_exp) & (df['click_uv'] <= df['exposure_uv'])].copy()
@@ -391,7 +392,7 @@ def show_single_analysis(df, label="表格 A", is_secondary=False):
     with c_e1: st.download_button("📄 Word 报告", word_file, f"Report_{label}.docx", key=f"bw_{label}")
     with c_e2: st.download_button("📊 Excel 数据", excel_file, f"Data_{label}.xlsx", key=f"be_{label}")
 
-# --- 5. 双表对比 (V50 归因逻辑) ---
+# --- 5. 双表对比 ---
 def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
     st.markdown("### ⚙️ 对比配置")
     mode = st.radio("维度", ["💳 仅卡片", "📍 卡片+坑位"], horizontal=True, key=f"rd_{la}")
@@ -444,7 +445,6 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         teb, tcb = s2['exposure_uv'].sum(), s2['click_uv'].sum()
         ctra, ctrb = (tca/tea if tea>0 else 0), (tcb/teb if teb>0 else 0)
         
-        # 归因计算
         df_m = pd.merge(s1, s2, on=cols, how='outer', suffixes=('_A', '_B')).fillna(0)
         df_m['CTRA'] = df_m.apply(lambda r: r['click_uv_A']/r['exposure_uv_A'] if r['exposure_uv_A']>0 else 0, axis=1)
         df_m['CTRB'] = df_m.apply(lambda r: r['click_uv_B']/r['exposure_uv_B'] if r['exposure_uv_B']>0 else 0, axis=1)
@@ -452,23 +452,19 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         df_m['WA'] = df_m['exposure_uv_A']/tea if tea>0 else 0
         df_m['WB'] = df_m['exposure_uv_B']/teb if teb>0 else 0
         
-        # Decomposition Logic
         df_m['IsNew'] = df_m['exposure_uv_A'] == 0
         df_m['IsLost'] = df_m['exposure_uv_B'] == 0
         df_m['IsCommon'] = (~df_m['IsNew']) & (~df_m['IsLost'])
         
-        # Rate Effect: Sum((CTRB - CTRA) * WA) for Common
         rate_eff = df_m[df_m['IsCommon']].apply(lambda r: (r['CTRB']-r['CTRA'])*r['WA'], axis=1).sum()
-        # Mix Effect: Sum((WB - WA) * CTRA) for Common
         mix_eff = df_m[df_m['IsCommon']].apply(lambda r: (r['WB']-r['WA'])*r['CTRA'], axis=1).sum()
-        # New/Lost Effect (Simulated Contribution)
         new_eff = df_m[df_m['IsNew']].apply(lambda r: (r['CTRB']-ctra)*r['WB'], axis=1).sum()
         lost_eff = df_m[df_m['IsLost']].apply(lambda r: (ctra-r['CTRA'])*r['WA'], axis=1).sum()
         
-        # Contribution Score
         df_m['Contrib'] = (df_m['click_uv_B']/teb if teb>0 else 0) - (df_m['click_uv_A']/tea if tea>0 else 0)
         
-        # 瀑布图数据
+        ctr_diff = ctrb - ctra
+        # === 修复 plot_waterfall 调用参数名 ===
         wf_df = pd.DataFrame({
             "measure": ["absolute", "relative", "relative", "relative", "relative", "total"],
             "category": ["A", "质量效应", "结构效应", "新卡红利", "下架/其他", "B"],
@@ -483,10 +479,9 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         k4.metric("点击", f"{tcb:,.0f}", f"{(tcb-tca)/tca:+.1%}" if tca>0 else "∞")
         
         c_w, c_t = st.columns([2, 1])
-        with c_w: st.plotly_chart(plot_waterfall(wf_data=wf_df, title="CTR 涨跌归因瀑布"), use_container_width=True)
+        with c_w: st.plotly_chart(plot_waterfall(wf_df, "CTR 涨跌归因瀑布"), use_container_width=True)
         with c_t: st.info(f"**核心结论**：\nCTR 变化 {ctrb-ctra:+.2%}。\n主要由 **{'质量优化' if abs(rate_eff)>abs(mix_eff) else '流量结构'}** 驱动。\n新卡带来增量: {new_eff:+.2%}。")
 
-        # 气泡图 (回归)
         st.divider()
         st.subheader("🔎 量效气泡图 (存量卡片)")
         valid_scatter = df_m[df_m['IsCommon']].copy()
@@ -499,7 +494,6 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
             fig.update_xaxes(tickformat=".0%"); fig.update_yaxes(tickformat=".2%")
             st.plotly_chart(fig, use_container_width=True)
 
-        # 排行榜
         st.subheader("🏆 贡献度排行榜 (Contribution)")
         def get_stat_label(r):
             if r['IsNew']: return '🟢 New'
@@ -515,7 +509,6 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
             st.markdown("**📉 负向拖累 Top 5**")
             st.dataframe(df_m.sort_values('Contrib', ascending=True).head(5)[[cols[0], 'Status', 'Contrib', 'CTRB']].style.format({'Contrib':'{:.2%}', 'CTRB':'{:.2%}'}), hide_index=True)
 
-        # 详细表
         st.divider()
         st.subheader("📋 详细数据表")
         show_cols = ['Status'] + cols + ['Contrib', 'exposure_uv_A', 'exposure_uv_B', 'CTRA', 'CTRB']
