@@ -10,8 +10,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openpyxl import load_workbook
 
 # --- 页面配置 ---
-st.set_page_config(page_title="CTR 终极稳定系统 (V56)", layout="wide")
-st.title("🎯 首页卡片 CTR 终极稳定系统 (V56.0)")
+st.set_page_config(page_title="CTR 大师严谨系统 (V57)", layout="wide")
+st.title("🎯 首页卡片 CTR 大师严谨系统 (V57.0)")
 
 # ==========================================
 # 🧠 0. 状态记忆
@@ -160,17 +160,17 @@ st.sidebar.header("1. 数据接入")
 manual_country = st.sidebar.text_input("✍️ 所属国家", value="US").upper()
 read_visible_only = st.sidebar.checkbox("👁️ 只读取显示行 (剔除筛选隐藏)", value=False)
 
-file_a = st.sidebar.file_uploader("上传主表格 (A)", type=["xlsx", "xls", "csv"], key="file_a")
+file_a = st.sidebar.file_uploader("上传主表格 (A)", type=["xlsx", "xls"], key="file_a")
 sheet_name_a = 0
-if file_a and file_a.name.endswith(('xlsx', 'xls')):
+if file_a:
     try:
         xls = pd.ExcelFile(file_a)
         if len(xls.sheet_names) > 1: sheet_name_a = st.sidebar.selectbox(f"表A工作表:", xls.sheet_names, key="s_a")
     except: pass
 
-file_b = st.sidebar.file_uploader("上传对比表格 (B)", type=["xlsx", "xls", "csv"], key="file_b")
+file_b = st.sidebar.file_uploader("上传对比表格 (B)", type=["xlsx", "xls"], key="file_b")
 sheet_name_b = 0
-if file_b and file_b.name.endswith(('xlsx', 'xls')):
+if file_b:
     try:
         xls = pd.ExcelFile(file_b)
         if len(xls.sheet_names) > 1: sheet_name_b = st.sidebar.selectbox(f"表B工作表:", xls.sheet_names, key="s_b")
@@ -186,11 +186,9 @@ def extract_start_date(s):
     return s
 
 @st.cache_data
-def process_data(file, sheet_name=0, visible_only=False):
+def process_data(file, sheet_name=0, visible_only=False, min_exp=50):
     try:
-        if file.name.endswith('.csv'):
-            raw_df = pd.read_csv(file)
-        elif visible_only:
+        if visible_only:
             wb = load_workbook(file, data_only=True, read_only=False)
             ws = wb.active if sheet_name == 0 else wb[sheet_name]
             data = []
@@ -212,16 +210,12 @@ def process_data(file, sheet_name=0, visible_only=False):
             elif "指标" in col: rename_map[col] = 'metric_name'
         df = raw_df.rename(columns=rename_map)
         
-        required = ['card_id', 'metric_name']
-        if not all(col in df.columns for col in required): return None
-        
         if 'slot_id' not in df.columns: df['slot_id'] = 'Default'
         df['card_id'] = df['card_id'].astype(str)
         df['slot_id'] = df['slot_id'].astype(str)
         
         fixed = ['card_id', 'slot_id', 'metric_name', '合计', '均值', '总计', 'Total']
         dates = [c for c in df.columns if c not in fixed and "Unnamed" not in str(c)]
-        if not dates: return None
         
         melted = df.melt(id_vars=['card_id', 'slot_id', 'metric_name'], value_vars=dates, var_name='raw_date', value_name='count')
         melted['date'] = pd.to_datetime(melted['raw_date'].apply(extract_start_date), errors='coerce').dt.date
@@ -238,33 +232,38 @@ def process_data(file, sheet_name=0, visible_only=False):
         final = melted.pivot_table(index=['date', 'card_id', 'slot_id'], columns='type', values='count', aggfunc='sum').reset_index()
         for c in ['exposure_uv', 'click_uv']:
             if c not in final.columns: final[c] = 0
-        return final
+        return final[(final['exposure_uv']>=min_exp) & (final['click_uv']<=final['exposure_uv'])]
     except: return None
 
 def filter_dataframe(df, min_exp):
     if df is None: return None
     return df[(df['exposure_uv'] >= min_exp) & (df['click_uv'] <= df['exposure_uv'])].copy()
 
-# --- 4. 单文件视图 (V56 修复版) ---
+# --- 4. 单文件视图 (V56 稳定逻辑) ---
 def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
-    # 1. 计算核心指标 (基础表)
+    # 1. 周期汇总 (加权)
     period = data.groupby(group_cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
-    period['加权CTR'] = period['click_uv']/period['exposure_uv']
+    period['加权CTR'] = period['click_uv'] / period['exposure_uv']
     
-    daily = data.groupby(group_cols + ['date']).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
-    daily['daily_ctr'] = daily['click_uv']/daily['exposure_uv']
+    # 2. 每日数据 (算术) - 先按 key+date 聚合，避免不同坑位干扰
+    daily_agg = data.groupby(group_cols + ['date']).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
+    daily_agg['daily_ctr'] = daily_agg['click_uv'] / daily_agg['exposure_uv']
     
-    arith = daily.groupby(group_cols)['daily_ctr'].mean().reset_index().rename(columns={'daily_ctr':'算术CTR'})
+    # 计算每组的算术平均值
+    arith = daily_agg.groupby(group_cols)['daily_ctr'].mean().reset_index().rename(columns={'daily_ctr':'算术CTR'})
     
-    # base_df 只包含汇总数据，不包含日期列，避免冲突
-    base_df = pd.merge(period, arith, on=group_cols, how='left').sort_values('exposure_uv', ascending=False)
+    # 3. 每日透视
+    pivot = daily_agg.pivot_table(index=group_cols, columns='date', values='daily_ctr', aggfunc='mean')
+    pivot.columns = [d.strftime('%m-%d') for d in pivot.columns]
     
-    # Label 处理
-    display_base = base_df.copy()
+    # 4. 合并 (base_df 不含日期列)
+    base_df = pd.merge(period, arith, on=group_cols, how='left')
+    display_base = base_df.copy().sort_values('exposure_uv', ascending=False)
+    
     if 'slot_id' in group_cols: display_base['label'] = display_base['card_id'] + " (" + display_base['slot_id'] + ")"
     else: display_base['label'] = display_base['card_id']
     
-    # 仪表盘
+    # Dashboard
     with st.expander(f"📊 {view_name} - Leader 驾驶舱", expanded=True):
         c1, c2 = st.columns(2)
         with c1: st.plotly_chart(plot_pie(display_base.head(8), 'label', 'exposure_uv', "流量 Top 8"), use_container_width=True)
@@ -272,7 +271,7 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
             top_ctr = display_base[display_base['exposure_uv'] > data['exposure_uv'].mean()*0.1].head(10)
             if not top_ctr.empty:
                 st.plotly_chart(plot_bar_race(top_ctr, '加权CTR', 'label', "高潜 Top 10"), use_container_width=True)
-            else: st.info("数据不足")
+            else: st.info("数据不足以排名")
 
     st.markdown("---")
     st.markdown(f"#### 📋 详细数据透视 ({view_name})")
@@ -283,7 +282,6 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
     with c_s2:
         table_metric = st.radio("📊 表格展示每日指标:", ["每日 CTR", "每日 曝光", "每日 点击"], horizontal=True, key=f"tm_{unique_key_prefix}")
     
-    # 动态计算 Pivot，避免列名冲突
     if table_metric == "每日 CTR":
         val_col, fmt_str = 'daily_ctr', '{:.2%}'
     elif table_metric == "每日 曝光":
@@ -291,20 +289,19 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
     else:
         val_col, fmt_str = 'click_uv', '{:,.0f}'
         
-    pivot = daily.pivot_table(index=group_cols, columns='date', values=val_col, aggfunc='sum' if val_col != 'daily_ctr' else 'mean')
-    pivot.columns = [d.strftime('%m-%d') for d in pivot.columns]
+    pivot_dynamic = daily_agg.pivot_table(index=group_cols, columns='date', values=val_col, aggfunc='sum' if val_col != 'daily_ctr' else 'mean')
+    pivot_dynamic.columns = [d.strftime('%m-%d') for d in pivot_dynamic.columns]
     
-    # 这里的 merge 是安全的，因为 base_df 没有日期列
-    final_display = pd.merge(display_base, pivot, on=group_cols, how='left')
+    final_display = pd.merge(display_base, pivot_dynamic, on=group_cols, how='left')
     
     if search_vals:
         final_display = final_display[final_display['label'].isin(search_vals)]
     
     cols = ['card_id', 'slot_id', '加权CTR', '算术CTR', 'exposure_uv', 'click_uv'] if 'slot_id' in group_cols else ['card_id', '加权CTR', '算术CTR', 'exposure_uv', 'click_uv']
-    cols += [c for c in pivot.columns]
+    cols += [c for c in pivot_dynamic.columns]
     
     fmt = {'加权CTR':'{:.2%}', '算术CTR':'{:.2%}', 'exposure_uv':'{:.0f}', 'click_uv':'{:.0f}'}
-    for c in pivot.columns: fmt[c] = fmt_str
+    for c in pivot_dynamic.columns: fmt[c] = fmt_str
     
     st.dataframe(final_display[cols].style.format(fmt).background_gradient(subset=['加权CTR'], cmap='RdYlGn', axis=0), use_container_width=True, height=500)
 
@@ -313,7 +310,7 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
     sel = st.multiselect(f"选择对象画图", display_base['label'].unique(), default=default_trend, key=f"ms_{unique_key_prefix}")
     if sel:
         metric_choice = st.radio("趋势指标:", ["✨ CTR", "📊 曝光量", "👆 点击量"], horizontal=True, key=f"rd_{unique_key_prefix}")
-        plot_df = daily.copy()
+        plot_df = daily_agg.copy()
         if 'slot_id' in group_cols: plot_df['label'] = plot_df['card_id'] + " (" + plot_df['slot_id'] + ")"
         else: plot_df['label'] = plot_df['card_id']
         plot_df = plot_df[plot_df['label'].isin(sel)]
@@ -322,7 +319,7 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
         elif metric_choice == "📊 曝光量": y_col, fmt_p = 'exposure_uv', ".0f"
         else: y_col, fmt_p = 'click_uv', ".0f"
             
-        st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True).update_yaxes(tickformat=fmt_p), use_container_width=True)
+        st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True, title=f"每日 {metric_choice} 走势").update_yaxes(tickformat=fmt_p), use_container_width=True)
 
 def show_single_analysis(df, label="表格 A", is_secondary=False):
     if label == "表格 A":
@@ -365,23 +362,33 @@ def show_single_analysis(df, label="表格 A", is_secondary=False):
     
     sub = sub_df_raw[(sub_df_raw['date']>=dr[0]) & (sub_df_raw['date']<=dr[1])].copy()
     
+    # === V57 核心: 计算全盘加权 vs 算术 ===
     e_tot = sub['exposure_uv'].sum()
     c_tot = sub['click_uv'].sum()
-    ctr_w = c_tot/e_tot if e_tot>0 else 0
+    weighted_ctr = c_tot/e_tot if e_tot>0 else 0
+    
     daily_g = sub.groupby('date').agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
-    daily_g['ctr'] = daily_g['click_uv']/daily_g['exposure_uv']
+    daily_g['day_ctr'] = daily_g['click_uv'] / daily_g['exposure_uv']
+    arithmetic_ctr = daily_g['day_ctr'].mean()
     
     st.markdown("### 🌍 全盘趋势驾驶舱")
-    st.plotly_chart(plot_dual_axis(daily_g, 'date', 'exposure_uv', 'ctr', "全盘流量 vs 效率"), use_container_width=True)
+    st.plotly_chart(plot_dual_axis(daily_g, 'date', 'exposure_uv', 'day_ctr', "全盘流量 vs 效率"), use_container_width=True)
     
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("总曝光", f"{e_tot:,.0f}")
     c2.metric("总点击", f"{c_tot:,.0f}")
-    c3.metric("加权均值 CTR", f"{ctr_w:.2%}")
+    c3.metric("加权均值 CTR", f"{weighted_ctr:.2%}", help="总点击 / 总曝光 (真实大盘)")
+    c4.metric("算术均值 CTR", f"{arithmetic_ctr:.2%}", help="每日大盘CTR的平均值 (不加权)")
+    
+    # === V57 智能诊断 ===
+    if weighted_ctr > arithmetic_ctr * 1.1:
+        st.success("✅ **量价齐升**：高流量日的表现更好，拉高了大盘均值。")
+    elif weighted_ctr < arithmetic_ctr * 0.9:
+        st.warning("⚠️ **被长尾拉高**：算术均值虚高，说明高流量日的表现反而不如低流量日。")
     
     if not is_secondary:
         global GLOBAL_DATA_CONTEXT
-        GLOBAL_DATA_CONTEXT = f"单表:{label}, 剔除:{exclude_list}, CTR:{ctr_w:.2%}, 曝光:{e_tot}"
+        GLOBAL_DATA_CONTEXT = f"单表:{label}, CTR:{weighted_ctr:.2%}, 点击:{c_tot}"
     
     st.divider()
     t1, t2 = st.tabs(["💳 视图:只看卡片", "📍 视图:细分坑位"])
@@ -396,7 +403,7 @@ def show_single_analysis(df, label="表格 A", is_secondary=False):
     export_df = export_df.sort_values('exposure_uv', ascending=False)
     top_5 = export_df.head(5).rename(columns={'card_id':'卡片ID', 'weighted_ctr':'CTR', 'exposure_uv':'曝光'})
     
-    word_file = generate_word_report(f"报告-{manual_country}", {"周期": str(dr), "曝光": f"{e_tot:,.0f}", "CTR": f"{ctr_w:.2%}"}, "数据详见附表", {"Top5": top_5})
+    word_file = generate_word_report(f"报告-{manual_country}", {"周期": str(dr), "曝光": f"{e_tot:,.0f}", "CTR": f"{weighted_ctr:.2%}"}, "数据详见附表", {"Top5": top_5})
     excel_file = generate_excel({"聚合": export_df, "明细": sub})
     with c_e1: st.download_button("📄 Word 报告", word_file, f"Report_{label}.docx", key=f"bw_{label}")
     with c_e2: st.download_button("📊 Excel 数据", excel_file, f"Data_{label}.xlsx", key=f"be_{label}")
@@ -464,7 +471,6 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         rate_eff = df_m[df_m['IsCommon']].apply(lambda r: (r['CTRB']-r['CTRA'])*r['WA'], axis=1).sum()
         mix_eff = df_m[df_m['IsCommon']].apply(lambda r: (r['WB']-r['WA'])*r['CTRA'], axis=1).sum()
         new_eff = df_m[df_m['IsNew']].apply(lambda r: (r['CTRB']-ctra)*r['WB'], axis=1).sum()
-        lost_eff = df_m[df_m['IsLost']].apply(lambda r: (ctra-r['CTRA'])*r['WA'], axis=1).sum()
         
         df_m['Contrib'] = (df_m['click_uv_B']/teb if teb>0 else 0) - (df_m['click_uv_A']/tea if tea>0 else 0)
         
@@ -513,7 +519,7 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
             fig.update_xaxes(tickformat=".0%"); fig.update_yaxes(tickformat=".2%")
             st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader("🏆 贡献度排行榜 (Contribution)")
+        st.subheader("🏆 贡献度排行榜")
         def get_stat_label(r):
             if r['IsNew']: return '🟢 New'
             if r['IsLost']: return '🔴 Lost'
