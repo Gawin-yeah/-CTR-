@@ -10,8 +10,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openpyxl import load_workbook
 
 # --- 页面配置 ---
-st.set_page_config(page_title="CTR 强力清洗系统 (V59)", layout="wide")
-st.title("🎯 首页卡片 CTR 强力清洗系统 (V59.0)")
+st.set_page_config(page_title="CTR 实时反馈系统 (V60)", layout="wide")
+st.title("🎯 首页卡片 CTR 实时反馈系统 (V60.0)")
 
 # ==========================================
 # 🧠 0. 状态记忆
@@ -177,8 +177,12 @@ if file_b and file_b.name.endswith(('xlsx', 'xls')):
     except: pass
 
 st.sidebar.markdown("---")
-# V59: 阈值控件
-min_exp_noise = st.sidebar.number_input("📉 单日最小曝光阈值 (去噪)", value=50, step=50, help="只有单日曝光 >= 此值的行才会被纳入计算。")
+# V60: 增加回调函数，确保数值变化时强制刷新
+def on_threshold_change():
+    # 强制刷新 Session State 触发重绘
+    st.session_state['force_refresh'] = True
+
+min_exp_noise = st.sidebar.number_input("📉 单日最小曝光阈值 (去噪)", value=50, step=50, on_change=on_threshold_change, help="单日曝光 < 此值的行将被物理剔除。")
 
 def extract_start_date(s):
     s = str(s).strip()
@@ -239,21 +243,20 @@ def process_data(file, sheet_name=0, visible_only=False):
         final = melted.pivot_table(index=['date', 'card_id', 'slot_id'], columns='type', values='count', aggfunc='sum').reset_index()
         for c in ['exposure_uv', 'click_uv']:
             if c not in final.columns: final[c] = 0
-            
-        # V59: process_data 只负责读，不负责过滤
         return final
     except: return None
 
-# === V59 全局清洗函数 (强力模式) ===
+# === V60 核心修复：返回清晰的统计 ===
 def filter_dataframe(df, min_exp):
-    if df is None: return None
+    if df is None: return None, 0, 0
     original_len = len(df)
-    # 核心过滤逻辑
     clean_df = df[
         (df['exposure_uv'] >= min_exp) & 
         (df['click_uv'] <= df['exposure_uv'])
     ].copy()
-    return clean_df, original_len
+    kept_len = len(clean_df)
+    dropped_len = original_len - kept_len
+    return clean_df, kept_len, dropped_len
 
 # --- 4. 单文件视图 ---
 def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
@@ -280,7 +283,7 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
             top_ctr = display[display['exposure_uv'] > data['exposure_uv'].mean()*0.1].head(10)
             if not top_ctr.empty:
                 st.plotly_chart(plot_bar_race(top_ctr, '加权CTR', 'label', "高潜 Top 10"), use_container_width=True)
-            else: st.info("数据不足")
+            else: st.info("数据不足以排名")
 
     st.markdown("---")
     st.markdown(f"#### 📋 详细数据透视 ({view_name})")
@@ -330,7 +333,7 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
             
         st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True, title=f"每日 {metric_choice} 走势").update_yaxes(tickformat=fmt_p), use_container_width=True)
 
-def show_single_analysis(df, drop_info, label="表格 A", is_secondary=False):
+def show_single_analysis(df, stat_info, label="表格 A", is_secondary=False):
     if label == "表格 A":
         key_ex, key_in = "k_ex_a", "k_in_a"
         def_ex, def_in = st.session_state.persist_ex_a, st.session_state.persist_in_a
@@ -346,8 +349,8 @@ def show_single_analysis(df, drop_info, label="表格 A", is_secondary=False):
 
     st.markdown(f"## 🔎 {label} - 深度分析")
     
-    # V59: 显示过滤信息
-    st.caption(f"📊 数据清洗状态：{drop_info}")
+    # V60: 显眼展示过滤状态
+    st.info(f"🛡️ **数据清洗报告**：{stat_info}")
 
     if not is_secondary:
         if st.checkbox("⚔️ 开启表内对比", key=f"sw_{label}"):
@@ -424,7 +427,6 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
     mode = st.radio("维度", ["💳 仅卡片", "📍 卡片+坑位"], horizontal=True, key=f"rd_{la}")
     cols = ['card_id'] if "仅" in mode else ['card_id', 'slot_id']
     
-    # V58: 口径切换
     calc_type = st.radio("🧮 计算口径:", ["加权均值 (真实大盘)", "算术均值 (排除热点干扰)"], horizontal=True)
     
     all_cards = sorted(list(set(d1_raw['card_id'])|set(d2_raw['card_id'])))
@@ -463,7 +465,6 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         d1f = d1[(d1['date']>=dr1[0])&(d1['date']<=dr1[1])]
         d2f = d2[(d2['date']>=dr2[0])&(d2['date']<=dr2[1])]
         
-        # 指标计算
         if "加权" in calc_type:
             def get_g(d):
                 e=d['exposure_uv'].sum(); c=d['click_uv'].sum()
@@ -479,7 +480,6 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
             ea, ca, ctra = get_arith(d1f)
             eb, cb, ctrb = get_arith(d2f)
         
-        # 归因 (强制加权)
         s1 = d1f.groupby(cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
         s2 = d2f.groupby(cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
         
@@ -514,10 +514,10 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         conclusion = ""
         if ctr_diff > 0:
             if new_eff > abs(rate_eff) and rate_eff < 0: conclusion = "🚀 **新卡驱动**：新素材贡献主力，老卡疲软。"
-            elif rate_eff > 0 and new_eff > 0: conclusion = "🌟 **全面普涨**：存量与新卡表现均优异。"
+            elif rate_eff > 0 and new_eff > 0: conclusion = "🌟 **全面普涨**：存量质量提升，新卡表现优异。"
             else: conclusion = "📈 **稳步增长**。"
         else:
-            conclusion = "📉 **大盘回落**：关注负向因子。"
+            conclusion = "📉 **大盘回落**：关注负向贡献因子。"
 
         st.subheader("📊 全盘战报")
         k1, k2, k3, k4 = st.columns(4)
@@ -592,22 +592,23 @@ if file_a: df_a_raw = process_data(file_a, sheet_name_a, visible_only=read_visib
 df_b_raw = None
 if file_b: df_b_raw = process_data(file_b, sheet_name_b, visible_only=read_visible_only)
 
-# 全局清洗 (V59)
-df_a_clean, drop_a = filter_dataframe(df_a_raw, min_exp_noise) if df_a_raw is not None else (None, 0)
-df_b_clean, drop_b = filter_dataframe(df_b_raw, min_exp_noise) if df_b_raw is not None else (None, 0)
+# 全局清洗 (V60: 修正返回 unpacking)
+df_a, kept_a, drop_a = filter_dataframe(df_a_raw, min_exp_noise) if df_a_raw is not None else (None, 0, 0)
+df_b, kept_b, drop_b = filter_dataframe(df_b_raw, min_exp_noise) if df_b_raw is not None else (None, 0, 0)
 
-if df_a_clean is not None:
-    if df_b_clean is not None:
+if df_a is not None:
+    if df_b is not None:
         mode = st.radio("👇 模式", ["📄 单文件分析", "⚔️ 双表对比"], horizontal=True)
         st.divider()
         if mode == "📄 单文件分析":
             t1, t2 = st.tabs(["表格 A", "表格 B"])
-            with t1: show_single_analysis(df_a_clean, f"🧹 已剔除 {drop_a} 行噪点", "表格 A")
-            with t2: show_single_analysis(df_b_clean, f"🧹 已剔除 {drop_b} 行噪点", "表格 B", is_secondary=True)
+            # V60: 传递清洗信息
+            with t1: show_single_analysis(df_a, f"📉 原始:{len(df_a_raw)} -> ✅ 保留:{kept_a} (🗑️剔除:{drop_a})", "表格 A")
+            with t2: show_single_analysis(df_b, f"📉 原始:{len(df_b_raw)} -> ✅ 保留:{kept_b} (🗑️剔除:{drop_b})", "表格 B", is_secondary=True)
         else:
-            show_comparison(df_a_clean, df_b_clean)
+            show_comparison(df_a, df_b)
     else:
-        show_single_analysis(df_a_clean, f"🧹 已剔除 {drop_a} 行噪点", "表格 A")
+        show_single_analysis(df_a, f"📉 原始:{len(df_a_raw)} -> ✅ 保留:{kept_a} (🗑️剔除:{drop_a})", "表格 A")
 else:
     st.info("👈 请在左侧上传 Excel 文件。")
 
