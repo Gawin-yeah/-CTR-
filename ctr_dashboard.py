@@ -10,8 +10,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openpyxl import load_workbook
 
 # --- 页面配置 ---
-st.set_page_config(page_title="CTR 大师严谨系统 (V57)", layout="wide")
-st.title("🎯 首页卡片 CTR 大师严谨系统 (V57.0)")
+st.set_page_config(page_title="CTR 强力清洗系统 (V59)", layout="wide")
+st.title("🎯 首页卡片 CTR 强力清洗系统 (V59.0)")
 
 # ==========================================
 # 🧠 0. 状态记忆
@@ -160,24 +160,25 @@ st.sidebar.header("1. 数据接入")
 manual_country = st.sidebar.text_input("✍️ 所属国家", value="US").upper()
 read_visible_only = st.sidebar.checkbox("👁️ 只读取显示行 (剔除筛选隐藏)", value=False)
 
-file_a = st.sidebar.file_uploader("上传主表格 (A)", type=["xlsx", "xls"], key="file_a")
+file_a = st.sidebar.file_uploader("上传主表格 (A)", type=["xlsx", "xls", "csv"], key="file_a")
 sheet_name_a = 0
-if file_a:
+if file_a and file_a.name.endswith(('xlsx', 'xls')):
     try:
         xls = pd.ExcelFile(file_a)
         if len(xls.sheet_names) > 1: sheet_name_a = st.sidebar.selectbox(f"表A工作表:", xls.sheet_names, key="s_a")
     except: pass
 
-file_b = st.sidebar.file_uploader("上传对比表格 (B)", type=["xlsx", "xls"], key="file_b")
+file_b = st.sidebar.file_uploader("上传对比表格 (B)", type=["xlsx", "xls", "csv"], key="file_b")
 sheet_name_b = 0
-if file_b:
+if file_b and file_b.name.endswith(('xlsx', 'xls')):
     try:
         xls = pd.ExcelFile(file_b)
         if len(xls.sheet_names) > 1: sheet_name_b = st.sidebar.selectbox(f"表B工作表:", xls.sheet_names, key="s_b")
     except: pass
 
 st.sidebar.markdown("---")
-min_exp_noise = st.sidebar.number_input("📉 单日最小曝光阈值 (去噪)", value=50, step=50)
+# V59: 阈值控件
+min_exp_noise = st.sidebar.number_input("📉 单日最小曝光阈值 (去噪)", value=50, step=50, help="只有单日曝光 >= 此值的行才会被纳入计算。")
 
 def extract_start_date(s):
     s = str(s).strip()
@@ -186,9 +187,11 @@ def extract_start_date(s):
     return s
 
 @st.cache_data
-def process_data(file, sheet_name=0, visible_only=False, min_exp=50):
+def process_data(file, sheet_name=0, visible_only=False):
     try:
-        if visible_only:
+        if file.name.endswith('.csv'):
+            raw_df = pd.read_csv(file)
+        elif visible_only:
             wb = load_workbook(file, data_only=True, read_only=False)
             ws = wb.active if sheet_name == 0 else wb[sheet_name]
             data = []
@@ -210,12 +213,16 @@ def process_data(file, sheet_name=0, visible_only=False, min_exp=50):
             elif "指标" in col: rename_map[col] = 'metric_name'
         df = raw_df.rename(columns=rename_map)
         
+        required = ['card_id', 'metric_name']
+        if not all(col in df.columns for col in required): return None
+        
         if 'slot_id' not in df.columns: df['slot_id'] = 'Default'
         df['card_id'] = df['card_id'].astype(str)
         df['slot_id'] = df['slot_id'].astype(str)
         
         fixed = ['card_id', 'slot_id', 'metric_name', '合计', '均值', '总计', 'Total']
         dates = [c for c in df.columns if c not in fixed and "Unnamed" not in str(c)]
+        if not dates: return None
         
         melted = df.melt(id_vars=['card_id', 'slot_id', 'metric_name'], value_vars=dates, var_name='raw_date', value_name='count')
         melted['date'] = pd.to_datetime(melted['raw_date'].apply(extract_start_date), errors='coerce').dt.date
@@ -232,53 +239,55 @@ def process_data(file, sheet_name=0, visible_only=False, min_exp=50):
         final = melted.pivot_table(index=['date', 'card_id', 'slot_id'], columns='type', values='count', aggfunc='sum').reset_index()
         for c in ['exposure_uv', 'click_uv']:
             if c not in final.columns: final[c] = 0
-        return final[(final['exposure_uv']>=min_exp) & (final['click_uv']<=final['exposure_uv'])]
+            
+        # V59: process_data 只负责读，不负责过滤
+        return final
     except: return None
 
+# === V59 全局清洗函数 (强力模式) ===
 def filter_dataframe(df, min_exp):
     if df is None: return None
-    return df[(df['exposure_uv'] >= min_exp) & (df['click_uv'] <= df['exposure_uv'])].copy()
+    original_len = len(df)
+    # 核心过滤逻辑
+    clean_df = df[
+        (df['exposure_uv'] >= min_exp) & 
+        (df['click_uv'] <= df['exposure_uv'])
+    ].copy()
+    return clean_df, original_len
 
-# --- 4. 单文件视图 (V56 稳定逻辑) ---
+# --- 4. 单文件视图 ---
 def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
-    # 1. 周期汇总 (加权)
     period = data.groupby(group_cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
-    period['加权CTR'] = period['click_uv'] / period['exposure_uv']
+    period['加权CTR'] = period['click_uv']/period['exposure_uv']
     
-    # 2. 每日数据 (算术) - 先按 key+date 聚合，避免不同坑位干扰
-    daily_agg = data.groupby(group_cols + ['date']).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
-    daily_agg['daily_ctr'] = daily_agg['click_uv'] / daily_agg['exposure_uv']
+    daily = data.groupby(group_cols + ['date']).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
+    daily['daily_ctr'] = daily['click_uv']/daily['exposure_uv']
     
-    # 计算每组的算术平均值
-    arith = daily_agg.groupby(group_cols)['daily_ctr'].mean().reset_index().rename(columns={'daily_ctr':'算术CTR'})
-    
-    # 3. 每日透视
-    pivot = daily_agg.pivot_table(index=group_cols, columns='date', values='daily_ctr', aggfunc='mean')
+    arith = daily.groupby(group_cols)['daily_ctr'].mean().reset_index().rename(columns={'daily_ctr':'算术CTR'})
+    pivot = daily.pivot_table(index=group_cols, columns='date', values='daily_ctr', aggfunc='mean')
     pivot.columns = [d.strftime('%m-%d') for d in pivot.columns]
     
-    # 4. 合并 (base_df 不含日期列)
-    base_df = pd.merge(period, arith, on=group_cols, how='left')
-    display_base = base_df.copy().sort_values('exposure_uv', ascending=False)
+    base_df = pd.merge(period, arith, on=group_cols, how='left').sort_values('exposure_uv', ascending=False)
     
-    if 'slot_id' in group_cols: display_base['label'] = display_base['card_id'] + " (" + display_base['slot_id'] + ")"
-    else: display_base['label'] = display_base['card_id']
+    display = base_df.copy()
+    if 'slot_id' in group_cols: display['label'] = display['card_id'] + " (" + display['slot_id'] + ")"
+    else: display['label'] = display['card_id']
     
-    # Dashboard
     with st.expander(f"📊 {view_name} - Leader 驾驶舱", expanded=True):
         c1, c2 = st.columns(2)
-        with c1: st.plotly_chart(plot_pie(display_base.head(8), 'label', 'exposure_uv', "流量 Top 8"), use_container_width=True)
+        with c1: st.plotly_chart(plot_pie(display.head(8), 'label', 'exposure_uv', "流量 Top 8"), use_container_width=True)
         with c2: 
-            top_ctr = display_base[display_base['exposure_uv'] > data['exposure_uv'].mean()*0.1].head(10)
+            top_ctr = display[display['exposure_uv'] > data['exposure_uv'].mean()*0.1].head(10)
             if not top_ctr.empty:
                 st.plotly_chart(plot_bar_race(top_ctr, '加权CTR', 'label', "高潜 Top 10"), use_container_width=True)
-            else: st.info("数据不足以排名")
+            else: st.info("数据不足")
 
     st.markdown("---")
     st.markdown(f"#### 📋 详细数据透视 ({view_name})")
     
     c_s1, c_s2 = st.columns([2, 1])
     with c_s1:
-        search_vals = st.multiselect(f"🔍 搜索/筛选卡片", display_base['label'].unique(), key=f"search_{unique_key_prefix}")
+        search_vals = st.multiselect(f"🔍 搜索/筛选卡片", display['label'].unique(), key=f"search_{unique_key_prefix}")
     with c_s2:
         table_metric = st.radio("📊 表格展示每日指标:", ["每日 CTR", "每日 曝光", "每日 点击"], horizontal=True, key=f"tm_{unique_key_prefix}")
     
@@ -289,28 +298,28 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
     else:
         val_col, fmt_str = 'click_uv', '{:,.0f}'
         
-    pivot_dynamic = daily_agg.pivot_table(index=group_cols, columns='date', values=val_col, aggfunc='sum' if val_col != 'daily_ctr' else 'mean')
-    pivot_dynamic.columns = [d.strftime('%m-%d') for d in pivot_dynamic.columns]
+    pivot = daily.pivot_table(index=group_cols, columns='date', values=val_col, aggfunc='sum' if val_col != 'daily_ctr' else 'mean')
+    pivot.columns = [d.strftime('%m-%d') for d in pivot.columns]
     
-    final_display = pd.merge(display_base, pivot_dynamic, on=group_cols, how='left')
+    final_display = pd.merge(display, pivot, on=group_cols, how='left')
     
     if search_vals:
         final_display = final_display[final_display['label'].isin(search_vals)]
     
     cols = ['card_id', 'slot_id', '加权CTR', '算术CTR', 'exposure_uv', 'click_uv'] if 'slot_id' in group_cols else ['card_id', '加权CTR', '算术CTR', 'exposure_uv', 'click_uv']
-    cols += [c for c in pivot_dynamic.columns]
+    cols += [c for c in pivot.columns]
     
     fmt = {'加权CTR':'{:.2%}', '算术CTR':'{:.2%}', 'exposure_uv':'{:.0f}', 'click_uv':'{:.0f}'}
-    for c in pivot_dynamic.columns: fmt[c] = fmt_str
+    for c in pivot.columns: fmt[c] = fmt_str
     
     st.dataframe(final_display[cols].style.format(fmt).background_gradient(subset=['加权CTR'], cmap='RdYlGn', axis=0), use_container_width=True, height=500)
 
     st.markdown("#### 📈 趋势下钻")
     default_trend = search_vals if search_vals else []
-    sel = st.multiselect(f"选择对象画图", display_base['label'].unique(), default=default_trend, key=f"ms_{unique_key_prefix}")
+    sel = st.multiselect(f"选择对象画图", display['label'].unique(), default=default_trend, key=f"ms_{unique_key_prefix}")
     if sel:
         metric_choice = st.radio("趋势指标:", ["✨ CTR", "📊 曝光量", "👆 点击量"], horizontal=True, key=f"rd_{unique_key_prefix}")
-        plot_df = daily_agg.copy()
+        plot_df = daily.copy()
         if 'slot_id' in group_cols: plot_df['label'] = plot_df['card_id'] + " (" + plot_df['slot_id'] + ")"
         else: plot_df['label'] = plot_df['card_id']
         plot_df = plot_df[plot_df['label'].isin(sel)]
@@ -321,7 +330,7 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
             
         st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True, title=f"每日 {metric_choice} 走势").update_yaxes(tickformat=fmt_p), use_container_width=True)
 
-def show_single_analysis(df, label="表格 A", is_secondary=False):
+def show_single_analysis(df, drop_info, label="表格 A", is_secondary=False):
     if label == "表格 A":
         key_ex, key_in = "k_ex_a", "k_in_a"
         def_ex, def_in = st.session_state.persist_ex_a, st.session_state.persist_in_a
@@ -337,6 +346,9 @@ def show_single_analysis(df, label="表格 A", is_secondary=False):
 
     st.markdown(f"## 🔎 {label} - 深度分析")
     
+    # V59: 显示过滤信息
+    st.caption(f"📊 数据清洗状态：{drop_info}")
+
     if not is_secondary:
         if st.checkbox("⚔️ 开启表内对比", key=f"sw_{label}"):
             show_comparison_logic(df, df, f"{label}-A", f"{label}-B")
@@ -362,7 +374,6 @@ def show_single_analysis(df, label="表格 A", is_secondary=False):
     
     sub = sub_df_raw[(sub_df_raw['date']>=dr[0]) & (sub_df_raw['date']<=dr[1])].copy()
     
-    # === V57 核心: 计算全盘加权 vs 算术 ===
     e_tot = sub['exposure_uv'].sum()
     c_tot = sub['click_uv'].sum()
     weighted_ctr = c_tot/e_tot if e_tot>0 else 0
@@ -377,14 +388,13 @@ def show_single_analysis(df, label="表格 A", is_secondary=False):
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("总曝光", f"{e_tot:,.0f}")
     c2.metric("总点击", f"{c_tot:,.0f}")
-    c3.metric("加权均值 CTR", f"{weighted_ctr:.2%}", help="总点击 / 总曝光 (真实大盘)")
-    c4.metric("算术均值 CTR", f"{arithmetic_ctr:.2%}", help="每日大盘CTR的平均值 (不加权)")
+    c3.metric("加权均值 CTR", f"{weighted_ctr:.2%}", help="总点击/总曝光 (真实大盘)")
+    c4.metric("算术均值 CTR", f"{arithmetic_ctr:.2%}", help="每日大盘CTR的平均值")
     
-    # === V57 智能诊断 ===
     if weighted_ctr > arithmetic_ctr * 1.1:
-        st.success("✅ **量价齐升**：高流量日的表现更好，拉高了大盘均值。")
+        st.success("✅ **量价齐升**：高流量日表现更优，拉高了大盘。")
     elif weighted_ctr < arithmetic_ctr * 0.9:
-        st.warning("⚠️ **被长尾拉高**：算术均值虚高，说明高流量日的表现反而不如低流量日。")
+        st.warning("⚠️ **被长尾拉高**：高流量日表现不佳，算术均值虚高。")
     
     if not is_secondary:
         global GLOBAL_DATA_CONTEXT
@@ -413,6 +423,9 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
     st.markdown("### ⚙️ 对比配置")
     mode = st.radio("维度", ["💳 仅卡片", "📍 卡片+坑位"], horizontal=True, key=f"rd_{la}")
     cols = ['card_id'] if "仅" in mode else ['card_id', 'slot_id']
+    
+    # V58: 口径切换
+    calc_type = st.radio("🧮 计算口径:", ["加权均值 (真实大盘)", "算术均值 (排除热点干扰)"], horizontal=True)
     
     all_cards = sorted(list(set(d1_raw['card_id'])|set(d2_raw['card_id'])))
     
@@ -450,62 +463,86 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         d1f = d1[(d1['date']>=dr1[0])&(d1['date']<=dr1[1])]
         d2f = d2[(d2['date']>=dr2[0])&(d2['date']<=dr2[1])]
         
+        # 指标计算
+        if "加权" in calc_type:
+            def get_g(d):
+                e=d['exposure_uv'].sum(); c=d['click_uv'].sum()
+                return e,c,c/e if e>0 else 0
+            ea, ca, ctra = get_g(d1f)
+            eb, cb, ctrb = get_g(d2f)
+        else:
+            def get_arith(d):
+                e=d['exposure_uv'].sum(); c=d['click_uv'].sum()
+                g = d.groupby(cols).agg({'exposure_uv':'sum', 'click_uv':'sum'})
+                g['ctr'] = g['click_uv']/g['exposure_uv']
+                return e, c, g['ctr'].mean()
+            ea, ca, ctra = get_arith(d1f)
+            eb, cb, ctrb = get_arith(d2f)
+        
+        # 归因 (强制加权)
         s1 = d1f.groupby(cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
         s2 = d2f.groupby(cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
         
-        tea, tca = s1['exposure_uv'].sum(), s1['click_uv'].sum()
-        teb, tcb = s2['exposure_uv'].sum(), s2['click_uv'].sum()
-        ctra, ctrb = (tca/tea if tea>0 else 0), (tcb/teb if teb>0 else 0)
-        
+        w_ea, w_ca = s1['exposure_uv'].sum(), s1['click_uv'].sum()
+        w_eb, w_cb = s2['exposure_uv'].sum(), s2['click_uv'].sum()
+        w_ctra = w_ca/w_ea if w_ea>0 else 0
+        w_ctrb = w_cb/w_eb if w_eb>0 else 0
+
         df_m = pd.merge(s1, s2, on=cols, how='outer', suffixes=('_A', '_B')).fillna(0)
         df_m['CTRA'] = df_m.apply(lambda r: r['click_uv_A']/r['exposure_uv_A'] if r['exposure_uv_A']>0 else 0, axis=1)
         df_m['CTRB'] = df_m.apply(lambda r: r['click_uv_B']/r['exposure_uv_B'] if r['exposure_uv_B']>0 else 0, axis=1)
-        
-        df_m['WA'] = df_m['exposure_uv_A']/tea if tea>0 else 0
-        df_m['WB'] = df_m['exposure_uv_B']/teb if teb>0 else 0
-        
+        df_m['WA'] = df_m['exposure_uv_A']/w_ea if w_ea>0 else 0
+        df_m['WB'] = df_m['exposure_uv_B']/w_eb if w_eb>0 else 0
         df_m['IsNew'] = df_m['exposure_uv_A'] == 0
         df_m['IsLost'] = df_m['exposure_uv_B'] == 0
         df_m['IsCommon'] = (~df_m['IsNew']) & (~df_m['IsLost'])
         
         rate_eff = df_m[df_m['IsCommon']].apply(lambda r: (r['CTRB']-r['CTRA'])*r['WA'], axis=1).sum()
         mix_eff = df_m[df_m['IsCommon']].apply(lambda r: (r['WB']-r['WA'])*r['CTRA'], axis=1).sum()
-        new_eff = df_m[df_m['IsNew']].apply(lambda r: (r['CTRB']-ctra)*r['WB'], axis=1).sum()
+        new_eff = df_m[df_m['IsNew']].apply(lambda r: (r['CTRB']-w_ctra)*r['WB'], axis=1).sum()
         
-        df_m['Contrib'] = (df_m['click_uv_B']/teb if teb>0 else 0) - (df_m['click_uv_A']/tea if tea>0 else 0)
+        df_m['Contrib'] = (df_m['click_uv_B']/w_eb if w_eb>0 else 0) - (df_m['click_uv_A']/w_ea if w_ea>0 else 0)
         
-        ctr_diff = ctrb - ctra
+        ctr_diff = w_ctrb - w_ctra
         wf_df = pd.DataFrame({
             "measure": ["absolute", "relative", "relative", "relative", "relative", "total"],
-            "category": ["A (基准)", "存量表现", "流量结构", "新卡红利", "下架/其他", "B (当前)"],
-            "value": [ctra, rate_eff, mix_eff, new_eff, ctrb-ctra-rate_eff-mix_eff-new_eff, None],
-            "text_val": [f"{ctra:.2%}", f"{rate_eff:+.2%}", f"{mix_eff:+.2%}", f"{new_eff:+.2%}", "Diff", f"{ctrb:.2%}"]
+            "category": ["基准(加权)", "存量表现", "流量结构", "新卡红利", "下架/其他", "当前(加权)"],
+            "value": [w_ctra, rate_eff, mix_eff, new_eff, ctr_diff-rate_eff-mix_eff-new_eff, None],
+            "text_val": [f"{w_ctra:.2%}", f"{rate_eff:+.2%}", f"{mix_eff:+.2%}", f"{new_eff:+.2%}", "Diff", f"{w_ctrb:.2%}"]
         })
         
         conclusion = ""
         if ctr_diff > 0:
-            if new_eff > abs(rate_eff) and rate_eff < 0:
-                conclusion = "🚀 **新卡驱动型**：本周期 CTR 提升主要是由**新素材**驱动的。\n⚠️ **警惕**：存量老卡片表现疲软（存量表现为负），且流量分配效率可能下降。"
-            elif rate_eff > 0 and new_eff > 0:
-                conclusion = "🌟 **全面普涨**：存量卡片质量提升，且新卡表现优异，业务处于健康增长期。"
-            else:
-                conclusion = "📈 **稳步增长**：各项指标均为正向贡献。"
+            if new_eff > abs(rate_eff) and rate_eff < 0: conclusion = "🚀 **新卡驱动**：新素材贡献主力，老卡疲软。"
+            elif rate_eff > 0 and new_eff > 0: conclusion = "🌟 **全面普涨**：存量与新卡表现均优异。"
+            else: conclusion = "📈 **稳步增长**。"
         else:
-            conclusion = "📉 **大盘回落**：需关注负向贡献最大的因子。"
+            conclusion = "📉 **大盘回落**：关注负向因子。"
 
+        st.subheader("📊 全盘战报")
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("CTR", f"{ctrb:.2%}", f"{ctrb-ctra:+.2%}")
+        k1.metric(f"本期 CTR ({'加权' if '加权' in calc_type else '算术'})", f"{ctrb:.2%}", f"{ctrb-ctra:+.2%}")
+        st.caption(f"基准期 CTR: {ctra:.2%}")
         k2.metric("倍数", f"{ctrb/ctra:.2f}x" if ctra>0 else "∞")
-        k3.metric("曝光", f"{teb:,.0f}", f"{(teb-tea)/tea:+.1%}" if tea>0 else "∞")
-        k4.metric("点击", f"{tcb:,.0f}", f"{(tcb-tca)/tca:+.1%}" if tca>0 else "∞")
+        k3.metric("本期曝光", f"{eb:,.0f}", f"{(eb-ea)/ea:+.1%}" if ea>0 else "∞")
+        k4.metric("本期点击", f"{cb:,.0f}", f"{(cb-ca)/ca:+.1%}" if ca>0 else "∞")
         
+        diag = "常规"
+        if (eb-ea)/ea < -0.2 and (cb-ca)/ca < -0.1: diag = "⚠️ 虚假提效 (萎缩)"
+        elif (eb-ea)/ea > 0.2 and (ctrb-ctra) < 0: diag = "🟠 流量稀释"
+        elif (ctrb/ctra if ctra else 0) > 1.05 and (cb-ca)/ca > 0: diag = "🟢 有效增长"
+        st.info(f"**智能诊断**：{diag}")
+        
+        global GLOBAL_DATA_CONTEXT
+        GLOBAL_DATA_CONTEXT = f"对比: {calc_type}, CTR {ctra:.2%}->{ctrb:.2%}, 诊断:{diag}"
+
         c_w, c_t = st.columns([2, 1])
         with c_w: 
-            st.plotly_chart(plot_waterfall(wf_df, "CTR 涨跌归因瀑布"), use_container_width=True)
-            with st.expander("📖 读懂这张图 (名词解释)"):
-                st.markdown("- **存量表现**: 老卡片自身 CTR 变化的影响。\n- **流量结构**: 流量分配变化带来的影响。\n- **新卡红利**: 新上架卡片带来的增量。")
+            st.plotly_chart(plot_waterfall(wf_df, "CTR 涨跌归因 (基于加权逻辑拆解)"), use_container_width=True)
+            with st.expander("❓ 为什么归因图总是显示加权值？"):
+                st.write("归因分析依赖于流量权重（结构效应），算术平均无法进行结构拆解，因此瀑布图固定使用加权算法。")
         with c_t: 
-            st.success(f"**🤖 智能诊断**：\n\n{conclusion}")
+            st.success(f"**🤖 归因结论**：\n\n{conclusion}")
 
         st.divider()
         st.subheader("🔎 量效气泡图 (存量卡片)")
@@ -555,22 +592,22 @@ if file_a: df_a_raw = process_data(file_a, sheet_name_a, visible_only=read_visib
 df_b_raw = None
 if file_b: df_b_raw = process_data(file_b, sheet_name_b, visible_only=read_visible_only)
 
-# 全局清洗
-df_a = filter_dataframe(df_a_raw, min_exp_noise)
-df_b = filter_dataframe(df_b_raw, min_exp_noise)
+# 全局清洗 (V59)
+df_a_clean, drop_a = filter_dataframe(df_a_raw, min_exp_noise) if df_a_raw is not None else (None, 0)
+df_b_clean, drop_b = filter_dataframe(df_b_raw, min_exp_noise) if df_b_raw is not None else (None, 0)
 
-if df_a is not None:
-    if df_b is not None:
+if df_a_clean is not None:
+    if df_b_clean is not None:
         mode = st.radio("👇 模式", ["📄 单文件分析", "⚔️ 双表对比"], horizontal=True)
         st.divider()
         if mode == "📄 单文件分析":
             t1, t2 = st.tabs(["表格 A", "表格 B"])
-            with t1: show_single_analysis(df_a, "表格 A")
-            with t2: show_single_analysis(df_b, "表格 B", is_secondary=True)
+            with t1: show_single_analysis(df_a_clean, f"🧹 已剔除 {drop_a} 行噪点", "表格 A")
+            with t2: show_single_analysis(df_b_clean, f"🧹 已剔除 {drop_b} 行噪点", "表格 B", is_secondary=True)
         else:
-            show_comparison(df_a, df_b)
+            show_comparison(df_a_clean, df_b_clean)
     else:
-        show_single_analysis(df_a, "表格 A")
+        show_single_analysis(df_a_clean, f"🧹 已剔除 {drop_a} 行噪点", "表格 A")
 else:
     st.info("👈 请在左侧上传 Excel 文件。")
 
