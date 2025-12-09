@@ -10,8 +10,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openpyxl import load_workbook
 
 # --- 页面配置 ---
-st.set_page_config(page_title="CTR 实时反馈系统 (V60)", layout="wide")
-st.title("🎯 首页卡片 CTR 实时反馈系统 (V60.0)")
+st.set_page_config(page_title="CTR 终极精准系统 (V61)", layout="wide")
+st.title("🎯 首页卡片 CTR 终极精准系统 (V61.0)")
 
 # ==========================================
 # 🧠 0. 状态记忆
@@ -177,12 +177,10 @@ if file_b and file_b.name.endswith(('xlsx', 'xls')):
     except: pass
 
 st.sidebar.markdown("---")
-# V60: 增加回调函数，确保数值变化时强制刷新
+# V60: 回调刷新
 def on_threshold_change():
-    # 强制刷新 Session State 触发重绘
     st.session_state['force_refresh'] = True
-
-min_exp_noise = st.sidebar.number_input("📉 单日最小曝光阈值 (去噪)", value=50, step=50, on_change=on_threshold_change, help="单日曝光 < 此值的行将被物理剔除。")
+min_exp_noise = st.sidebar.number_input("📉 单日最小曝光阈值 (去噪)", value=50, step=50, on_change=on_threshold_change)
 
 def extract_start_date(s):
     s = str(s).strip()
@@ -246,7 +244,6 @@ def process_data(file, sheet_name=0, visible_only=False):
         return final
     except: return None
 
-# === V60 核心修复：返回清晰的统计 ===
 def filter_dataframe(df, min_exp):
     if df is None: return None, 0, 0
     original_len = len(df)
@@ -276,13 +273,14 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
     if 'slot_id' in group_cols: display['label'] = display['card_id'] + " (" + display['slot_id'] + ")"
     else: display['label'] = display['card_id']
     
+    # V61 修复：给每个图表加唯一 Key
     with st.expander(f"📊 {view_name} - Leader 驾驶舱", expanded=True):
         c1, c2 = st.columns(2)
-        with c1: st.plotly_chart(plot_pie(display.head(8), 'label', 'exposure_uv', "流量 Top 8"), use_container_width=True)
+        with c1: st.plotly_chart(plot_pie(display.head(8), 'label', 'exposure_uv', "流量 Top 8"), use_container_width=True, key=f"pie_{unique_key_prefix}")
         with c2: 
             top_ctr = display[display['exposure_uv'] > data['exposure_uv'].mean()*0.1].head(10)
             if not top_ctr.empty:
-                st.plotly_chart(plot_bar_race(top_ctr, '加权CTR', 'label', "高潜 Top 10"), use_container_width=True)
+                st.plotly_chart(plot_bar_race(top_ctr, '加权CTR', 'label', "高潜 Top 10"), use_container_width=True, key=f"bar_{unique_key_prefix}")
             else: st.info("数据不足以排名")
 
     st.markdown("---")
@@ -331,7 +329,7 @@ def render_analysis_view(data, group_cols, view_name, unique_key_prefix):
         elif metric_choice == "📊 曝光量": y_col, fmt_p = 'exposure_uv', ".0f"
         else: y_col, fmt_p = 'click_uv', ".0f"
             
-        st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True, title=f"每日 {metric_choice} 走势").update_yaxes(tickformat=fmt_p), use_container_width=True)
+        st.plotly_chart(px.line(plot_df, x='date', y=y_col, color='label', markers=True, title=f"每日 {metric_choice} 走势").update_yaxes(tickformat=fmt_p), use_container_width=True, key=f"trend_{unique_key_prefix}")
 
 def show_single_analysis(df, stat_info, label="表格 A", is_secondary=False):
     if label == "表格 A":
@@ -348,9 +346,7 @@ def show_single_analysis(df, stat_info, label="表格 A", is_secondary=False):
         cb_ex, cb_in = None, None
 
     st.markdown(f"## 🔎 {label} - 深度分析")
-    
-    # V60: 显眼展示过滤状态
-    st.info(f"🛡️ **数据清洗报告**：{stat_info}")
+    st.caption(f"📊 数据清洗状态：{stat_info}")
 
     if not is_secondary:
         if st.checkbox("⚔️ 开启表内对比", key=f"sw_{label}"):
@@ -386,7 +382,7 @@ def show_single_analysis(df, stat_info, label="表格 A", is_secondary=False):
     arithmetic_ctr = daily_g['day_ctr'].mean()
     
     st.markdown("### 🌍 全盘趋势驾驶舱")
-    st.plotly_chart(plot_dual_axis(daily_g, 'date', 'exposure_uv', 'day_ctr', "全盘流量 vs 效率"), use_container_width=True)
+    st.plotly_chart(plot_dual_axis(daily_g, 'date', 'exposure_uv', 'day_ctr', "全盘流量 vs 效率"), use_container_width=True, key=f"dual_{label}")
     
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("总曝光", f"{e_tot:,.0f}")
@@ -427,7 +423,7 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
     mode = st.radio("维度", ["💳 仅卡片", "📍 卡片+坑位"], horizontal=True, key=f"rd_{la}")
     cols = ['card_id'] if "仅" in mode else ['card_id', 'slot_id']
     
-    calc_type = st.radio("🧮 计算口径:", ["加权均值 (真实大盘)", "算术均值 (排除热点干扰)"], horizontal=True)
+    calc_type = st.radio("🧮 计算口径:", ["加权均值 (真实大盘)", "算术均值 (排除热点干扰)"], horizontal=True, key=f"ct_{la}")
     
     all_cards = sorted(list(set(d1_raw['card_id'])|set(d2_raw['card_id'])))
     
@@ -465,6 +461,7 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         d1f = d1[(d1['date']>=dr1[0])&(d1['date']<=dr1[1])]
         d2f = d2[(d2['date']>=dr2[0])&(d2['date']<=dr2[1])]
         
+        # 指标计算
         if "加权" in calc_type:
             def get_g(d):
                 e=d['exposure_uv'].sum(); c=d['click_uv'].sum()
@@ -480,6 +477,7 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
             ea, ca, ctra = get_arith(d1f)
             eb, cb, ctrb = get_arith(d2f)
         
+        # 归因 (强制加权)
         s1 = d1f.groupby(cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
         s2 = d2f.groupby(cols).agg({'exposure_uv':'sum', 'click_uv':'sum'}).reset_index()
         
@@ -491,6 +489,7 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         df_m = pd.merge(s1, s2, on=cols, how='outer', suffixes=('_A', '_B')).fillna(0)
         df_m['CTRA'] = df_m.apply(lambda r: r['click_uv_A']/r['exposure_uv_A'] if r['exposure_uv_A']>0 else 0, axis=1)
         df_m['CTRB'] = df_m.apply(lambda r: r['click_uv_B']/r['exposure_uv_B'] if r['exposure_uv_B']>0 else 0, axis=1)
+        
         df_m['WA'] = df_m['exposure_uv_A']/w_ea if w_ea>0 else 0
         df_m['WB'] = df_m['exposure_uv_B']/w_eb if w_eb>0 else 0
         df_m['IsNew'] = df_m['exposure_uv_A'] == 0
@@ -503,18 +502,18 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
         
         df_m['Contrib'] = (df_m['click_uv_B']/w_eb if w_eb>0 else 0) - (df_m['click_uv_A']/w_ea if w_ea>0 else 0)
         
-        ctr_diff = w_ctrb - w_ctra
+        ctr_diff_w = w_ctrb - w_ctra
         wf_df = pd.DataFrame({
             "measure": ["absolute", "relative", "relative", "relative", "relative", "total"],
             "category": ["基准(加权)", "存量表现", "流量结构", "新卡红利", "下架/其他", "当前(加权)"],
-            "value": [w_ctra, rate_eff, mix_eff, new_eff, ctr_diff-rate_eff-mix_eff-new_eff, None],
+            "value": [w_ctra, rate_eff, mix_eff, new_eff, ctr_diff_w-rate_eff-mix_eff-new_eff, None],
             "text_val": [f"{w_ctra:.2%}", f"{rate_eff:+.2%}", f"{mix_eff:+.2%}", f"{new_eff:+.2%}", "Diff", f"{w_ctrb:.2%}"]
         })
         
         conclusion = ""
-        if ctr_diff > 0:
+        if ctr_diff_w > 0:
             if new_eff > abs(rate_eff) and rate_eff < 0: conclusion = "🚀 **新卡驱动**：新素材贡献主力，老卡疲软。"
-            elif rate_eff > 0 and new_eff > 0: conclusion = "🌟 **全面普涨**：存量质量提升，新卡表现优异。"
+            elif rate_eff > 0 and new_eff > 0: conclusion = "🌟 **全面普涨**：存量与新卡表现均优异。"
             else: conclusion = "📈 **稳步增长**。"
         else:
             conclusion = "📉 **大盘回落**：关注负向贡献因子。"
@@ -538,9 +537,9 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
 
         c_w, c_t = st.columns([2, 1])
         with c_w: 
-            st.plotly_chart(plot_waterfall(wf_df, "CTR 涨跌归因 (基于加权逻辑拆解)"), use_container_width=True)
+            st.plotly_chart(plot_waterfall(wf_df, "CTR 涨跌归因 (基于加权逻辑拆解)"), use_container_width=True, key=f"wf_{la}")
             with st.expander("❓ 为什么归因图总是显示加权值？"):
-                st.write("归因分析依赖于流量权重（结构效应），算术平均无法进行结构拆解，因此瀑布图固定使用加权算法。")
+                st.write("归因分析依赖于流量权重，因此固定使用加权算法。")
         with c_t: 
             st.success(f"**🤖 归因结论**：\n\n{conclusion}")
 
@@ -554,7 +553,7 @@ def show_comparison_logic(d1_raw, d2_raw, la="A", lb="B"):
             fig = px.scatter(valid_scatter, x="ExpChg", y="CTRChg", hover_name="label", size="exposure_uv_B", color="Contrib", color_continuous_scale="RdYlGn", title="曝光变化 vs CTR变化 (右上角=量价齐升)")
             fig.add_hline(y=0, line_dash="dash"); fig.add_vline(x=0, line_dash="dash")
             fig.update_xaxes(tickformat=".0%"); fig.update_yaxes(tickformat=".2%")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key=f"bubble_{la}")
 
         st.subheader("🏆 贡献度排行榜")
         def get_stat_label(r):
@@ -603,12 +602,12 @@ if df_a is not None:
         if mode == "📄 单文件分析":
             t1, t2 = st.tabs(["表格 A", "表格 B"])
             # V60: 传递清洗信息
-            with t1: show_single_analysis(df_a, f"📉 原始:{len(df_a_raw)} -> ✅ 保留:{kept_a} (🗑️剔除:{drop_a})", "表格 A")
-            with t2: show_single_analysis(df_b, f"📉 原始:{len(df_b_raw)} -> ✅ 保留:{kept_b} (🗑️剔除:{drop_b})", "表格 B", is_secondary=True)
+            with t1: show_single_analysis(df_a, f"🧹 已剔除 {drop_a} 行噪点", "表格 A")
+            with t2: show_single_analysis(df_b, f"🧹 已剔除 {drop_b} 行噪点", "表格 B", is_secondary=True)
         else:
             show_comparison(df_a, df_b)
     else:
-        show_single_analysis(df_a, f"📉 原始:{len(df_a_raw)} -> ✅ 保留:{kept_a} (🗑️剔除:{drop_a})", "表格 A")
+        show_single_analysis(df_a, f"🧹 已剔除 {drop_a} 行噪点", "表格 A")
 else:
     st.info("👈 请在左侧上传 Excel 文件。")
 
